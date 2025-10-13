@@ -1,0 +1,22 @@
+# .github/workflows/deploy-dev.yml
+name: Deploy Dev Environment
+
+# dev branch allow push and merge
+on:
+  push:
+    branches:
+      - develop
+jobs:
+  terraform_deploy_dev:
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+    # in progress
+    - name: Configure AWS Credentials 
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+    - name: Docker build
+    - name: Docker push
+    - name: Deploy to dev environment
