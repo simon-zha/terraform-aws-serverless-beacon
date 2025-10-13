@@ -20,3 +20,5 @@ jobs:
     - name: Docker build
     - name: Docker push
     - name: Deploy to dev environment
+    - name: Rollout #in case deployment or software is not running properly
+
