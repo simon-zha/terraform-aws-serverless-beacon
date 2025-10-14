@@ -1,24 +1,70 @@
 # .github/workflows/deploy-dev.yml
 name: Deploy Dev Environment
 
-# dev branch allow push and merge
 on:
   push:
-    branches:
-      - develop
+    branches: [develop]
+
 jobs:
   terraform_deploy_dev:
     runs-on: ubuntu-latest
     environment: dev
+    
     steps:
+    # 1. Checkout Code
     - name: Checkout Code
       uses: actions/checkout@v4
-    # in progress
-    - name: Configure AWS Credentials 
+    
+    # 2. Python Setup
+    - name: Setup Python 3.12
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+        cache: 'pip'
+    
+    # 3. Run Initilize
+    - name: Initialize Project
+      run: |
+        ./init.sh
+    
+    # 4. AWS Configuration 
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+    
+    # 5. Setup Terraform
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
-    - name: Docker build
-    - name: Docker push
-    - name: Deploy to dev environment
-    - name: Rollout #in case deployment or software is not running properly
+      with:
+        terraform-version: '1.9.4'
 
+    # 6. Docker Build
+    - name: Docker build
+      run: |
+        docker build -t your-app:dev .
+    
+    # 7. Docker Push
+    - name: Docker push
+      run: |
+        docker push your-ecr-repo/your-app:dev
+    
+    # 8. Terraform Initilize
+    - name: Terraform Init
+      run: terraform init
+    
+    # 9. Terraform Plan
+    - name: Terraform Plan
+      run: terraform plan
+    
+    # 10. Terraform Deploy
+    - name: Deploy to Dev Environment
+      run: terraform apply -auto-approve
+    
+    # 11. Rollout
+    - name: Rollout Verification
+      run: |
+        # Add test api if needed
+        echo "Deploy Compeleted."
