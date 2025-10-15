@@ -118,9 +118,6 @@ jobs:
         with:
           terraform_version: 1.9.4
 
-      - name: Terraform fmt
-        run: terraform fmt -recursive
-
       - name: Terraform Init
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} init -input=false -upgrade -backend-config=${{ env.TF_BACKEND_CONFIG }}
 
