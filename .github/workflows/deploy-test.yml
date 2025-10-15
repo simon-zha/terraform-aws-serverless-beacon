@@ -51,6 +51,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build helper dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r docker/requirements.txt
+
+      - name: Prepare analytics shared assets
+        working-directory: lambda/analytics
+        run: python docker_prep.py
+
+      - name: Prepare askbeacon shared assets
+        working-directory: lambda/askbeacon
+        run: python docker_prep.py
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
