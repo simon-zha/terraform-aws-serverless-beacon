@@ -36,7 +36,7 @@ variable "beacon_description" {
 
 variable "beacon_enable_auth" {
   type        = bool
-  description = "authentication enable? default Dev env close, Staging/Prod enalbed"
+  description = "authentication enable"
   default     = null
 }
 
