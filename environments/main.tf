@@ -132,7 +132,7 @@ locals {
 }
 
 module "serverless_beacon" {
-  source = ".."
+  source = "./.."
 
   region      = var.region
   common-tags = local.base_tags
