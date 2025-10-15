@@ -6,13 +6,13 @@ terraform {
 
 variable "region" {
   type        = string
-  description = "AWS Region。"
+  description = "AWS Region"
   default     = "us-east-1"
 }
 
 variable "additional_tags" {
   type        = map(string)
-  description = "additional_tags。"
+  description = "additional_tags"
   default     = {}
 }
 
@@ -30,13 +30,13 @@ variable "beacon_name" {
 
 variable "beacon_description" {
   type        = string
-  description = "Beacon description。"
+  description = "Beacon description"
   default     = null
 }
 
 variable "beacon_enable_auth" {
   type        = bool
-  description = "authentication enable?，default Dev env close, Staging/Prod enalbed"
+  description = "authentication enable? default Dev env close, Staging/Prod enalbed"
   default     = null
 }
 
@@ -90,7 +90,7 @@ variable "azure_openai_chat_deployment_name" {
 
 variable "openai_api_key" {
   type        = string
-  description = "OpenAI API Key。"
+  description = "OpenAI API Key"
   default     = null
 }
 
