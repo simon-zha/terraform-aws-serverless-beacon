@@ -18,7 +18,7 @@ on:
       aws_region:
         description: "AWS region override (optional)"
         required: false
-        default: ""
+        default: "ap-southeast-2"
 
 permissions:
   contents: read
@@ -30,14 +30,14 @@ jobs:
     runs-on: ubuntu-latest
     environment: dev
     env:
-      AWS_REGION: ${{ inputs.aws_region != '' && inputs.aws_region || vars.AWS_REGION }}
+      AWS_REGION: ${{ inputs.aws_region != '' && inputs.aws_region || vars.AWS_REGION || 'ap-southeast-2' }}
       TF_WORKING_DIR: environments
       TF_WORKSPACE: ${{ inputs.workspace }}
       TF_APPLY_FLAG: ${{ inputs.apply }}
       TF_BACKEND_CONFIG: ${{ inputs.backend_config }}
       TF_IN_AUTOMATION: true
       TF_INPUT: false
-      TF_VAR_region: ${{ inputs.aws_region != '' && inputs.aws_region || vars.AWS_REGION }}
+      TF_VAR_region: ${{ inputs.aws_region != '' && inputs.aws_region || vars.AWS_REGION || 'ap-southeast-2' }}
       TF_VAR_beacon_admin_username: ${{ secrets.BEACON_ADMIN_USERNAME }}
       TF_VAR_beacon_admin_password: ${{ secrets.BEACON_ADMIN_PASSWORD }}
       TF_VAR_beacon_guest_username: ${{ secrets.BEACON_GUEST_USERNAME }}
