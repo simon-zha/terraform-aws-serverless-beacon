@@ -78,7 +78,13 @@ jobs:
       - name: Log in to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
-
+      - name: Ensure ECR repositories exist
+        run: |
+          for repo in sbeacon-analytics-lambda-containers sbeacon-askbeacon-lambda-containers; do
+            if ! aws ecr describe-repositories --repository-names "$repo" --region "$AWS_REGION" >/dev/null 2>&1; then
+              aws ecr create-repository --repository-name "$repo" --region "$AWS_REGION"
+            fi
+          done
       - name: Build analytics lambda image
         working-directory: lambda/analytics
         run: docker build -t ${{ steps.login-ecr.outputs.registry }}/sbeacon-analytics-lambda-containers:latest .
