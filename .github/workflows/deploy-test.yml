@@ -1,0 +1,122 @@
+name: Manual Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Start terraform apply (true/false)"
+        required: false
+        default: "true"
+      backend_config:
+        description: "Backend HCL file (default: backend-dev.hcl)"
+        required: false
+        default: "backend-dev.hcl"
+      workspace:
+        description: "Terraform workspace (default: dev)"
+        required: false
+        default: "dev"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    name: Manual Terraform Deploy
+    runs-on: ubuntu-latest
+    environment: dev
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TF_WORKING_DIR: environments
+      TF_WORKSPACE: ${{ inputs.workspace }}
+      TF_APPLY_FLAG: ${{ inputs.apply }}
+      TF_BACKEND_CONFIG: ${{ inputs.backend_config }}
+      TF_IN_AUTOMATION: true
+      TF_INPUT: false
+      TF_VAR_region: ${{ vars.AWS_REGION }}
+      TF_VAR_beacon_admin_username: ${{ secrets.BEACON_ADMIN_USERNAME }}
+      TF_VAR_beacon_admin_password: ${{ secrets.BEACON_ADMIN_PASSWORD }}
+      TF_VAR_beacon_guest_username: ${{ secrets.BEACON_GUEST_USERNAME }}
+      TF_VAR_beacon_guest_password: ${{ secrets.BEACON_GUEST_PASSWORD }}
+      TF_VAR_azure_openai_api_key: ${{ secrets.AZURE_OPENAI_API_KEY }}
+      TF_VAR_azure_openai_endpoint: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+      TF_VAR_azure_openai_api_version: ${{ secrets.AZURE_OPENAI_API_VERSION }}
+      TF_VAR_azure_openai_chat_deployment_name: ${{ secrets.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME }}
+      TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build analytics lambda image
+        working-directory: lambda/analytics
+        run: docker build -t ${{ steps.login-ecr.outputs.registry }}/sbeacon-analytics-lambda-containers:latest .
+
+      - name: Build askbeacon lambda image
+        working-directory: lambda/askbeacon
+        run: docker build -t ${{ steps.login-ecr.outputs.registry }}/sbeacon-askbeacon-lambda-containers:latest .
+
+      - name: Push analytics lambda image
+        run: docker push ${{ steps.login-ecr.outputs.registry }}/sbeacon-analytics-lambda-containers:latest
+
+      - name: Push askbeacon lambda image
+        run: docker push ${{ steps.login-ecr.outputs.registry }}/sbeacon-askbeacon-lambda-containers:latest
+
+      - name: Capture image digests for Terraform
+        run: |
+          analytics=$(docker inspect --format='{{index .RepoDigests 0}}' ${{ steps.login-ecr.outputs.registry }}/sbeacon-analytics-lambda-containers:latest)
+          askbeacon=$(docker inspect --format='{{index .RepoDigests 0}}' ${{ steps.login-ecr.outputs.registry }}/sbeacon-askbeacon-lambda-containers:latest)
+          echo "TF_VAR_analytics_lambda_image_uri=${analytics}" >> $GITHUB_ENV
+          echo "TF_VAR_askbeacon_lambda_image_uri=${askbeacon}" >> $GITHUB_ENV
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.4
+
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -input=false -upgrade -backend-config=${{ env.TF_BACKEND_CONFIG }}
+
+      - name: Select Terraform Workspace
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform workspace select ${{ env.TF_WORKSPACE }} || terraform workspace new ${{ env.TF_WORKSPACE }}
+
+      - name: Terraform Validate
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform validate
+
+      - name: Terraform Plan
+        id: plan
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          terraform plan -input=false -out=tfplan
+          terraform show -no-color tfplan > tfplan.txt
+
+      - name: Upload Plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: manual-terraform-plan-${{ github.run_id }}
+          path: ${{ env.TF_WORKING_DIR }}/tfplan.txt
+
+      - name: Terraform Apply
+        if: env.TF_APPLY_FLAG == 'true'
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform apply -input=false -auto-approve tfplan
+
+      - name: Clean up plan files
+        if: always()
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: rm -f tfplan tfplan.txt
