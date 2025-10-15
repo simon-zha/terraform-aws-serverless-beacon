@@ -131,7 +131,7 @@ jobs:
         id: plan
         run: |
           terraform -chdir=${{ env.TF_WORKING_DIR }} plan -input=false -out=tfplan
-          terraform -chdir=${{ env.TF_WORKING_DIR }} show -no-color tfplan > tfplan.txt
+          terraform -chdir=${{ env.TF_WORKING_DIR }} show -no-color tfplan > ${{ env.TF_WORKING_DIR }}/tfplan.txt
 
       - name: Upload Plan
         uses: actions/upload-artifact@v4
