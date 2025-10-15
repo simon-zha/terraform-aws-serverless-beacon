@@ -36,7 +36,7 @@ jobs:
     env:
       AWS_REGION: ${{ inputs.aws_region != '' && inputs.aws_region || vars.AWS_REGION || 'ap-southeast-2' }}
       TF_WORKING_DIR: ${{ github.workspace }}/environments
-      TF_WORKSPACE: ${{ inputs.workspace }}
+      TARGET_WORKSPACE: ${{ inputs.workspace }}
       TF_APPLY_FLAG: ${{ inputs.apply }}
       TF_DESTROY_FLAG: ${{ inputs.trigger_destroy }}
       TF_BACKEND_CONFIG: ${{ inputs.backend_config }}
@@ -125,7 +125,7 @@ jobs:
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} init -input=false -upgrade -backend-config=${{ env.TF_BACKEND_CONFIG }}
 
       - name: Select Terraform Workspace
-        run: terraform -chdir=${{ env.TF_WORKING_DIR }} workspace select ${{ env.TF_WORKSPACE }} || terraform -chdir=${{ env.TF_WORKING_DIR }} workspace new ${{ env.TF_WORKSPACE }}
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} workspace select ${{ env.TARGET_WORKSPACE }} || terraform -chdir=${{ env.TF_WORKING_DIR }} workspace new ${{ env.TARGET_WORKSPACE }}
 
       - name: Terraform Validate
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} validate
@@ -153,7 +153,7 @@ jobs:
           approvers: ${{ vars.APPROVERS || '' }}
           additional-approvers: ${{ vars.EXEC_APPROVERS || '' }}
           issue-title: 'Manual Deploy - Destroy Confirmation'
-          issue-body: 'Confirm terraform destroy for workspace `${{ env.TF_WORKSPACE }}`'
+          issue-body: 'Confirm terraform destroy for workspace `${{ env.TARGET_WORKSPACE }}`'
 
       - name: Terraform Destroy
         if: env.TF_DESTROY_FLAG == 'true'
