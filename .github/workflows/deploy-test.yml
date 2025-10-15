@@ -19,6 +19,10 @@ on:
         description: "AWS region override (optional)"
         required: false
         default: "ap-southeast-2"
+      trigger_destroy:
+        description: "Run terraform destroy after completion (true/false)"
+        required: false
+        default: "false"
 
 permissions:
   contents: read
@@ -31,9 +35,10 @@ jobs:
     environment: dev
     env:
       AWS_REGION: ${{ inputs.aws_region != '' && inputs.aws_region || vars.AWS_REGION || 'ap-southeast-2' }}
-      TF_WORKING_DIR: environments
+      TF_WORKING_DIR: ${{ github.workspace }}/environments
       TF_WORKSPACE: ${{ inputs.workspace }}
       TF_APPLY_FLAG: ${{ inputs.apply }}
+      TF_DESTROY_FLAG: ${{ inputs.trigger_destroy }}
       TF_BACKEND_CONFIG: ${{ inputs.backend_config }}
       TF_IN_AUTOMATION: true
       TF_INPUT: false
@@ -78,6 +83,7 @@ jobs:
       - name: Log in to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
+
       - name: Ensure ECR repositories exist
         run: |
           for repo in sbeacon-analytics-lambda-containers sbeacon-askbeacon-lambda-containers; do
@@ -85,6 +91,7 @@ jobs:
               aws ecr create-repository --repository-name "$repo" --region "$AWS_REGION"
             fi
           done
+
       - name: Build analytics lambda image
         working-directory: lambda/analytics
         run: docker build -t ${{ steps.login-ecr.outputs.registry }}/sbeacon-analytics-lambda-containers:latest .
@@ -115,23 +122,19 @@ jobs:
         run: terraform fmt -check -recursive
 
       - name: Terraform Init
-        working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform init -input=false -upgrade -backend-config=${{ env.TF_BACKEND_CONFIG }}
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} init -input=false -upgrade -backend-config=${{ env.TF_BACKEND_CONFIG }}
 
       - name: Select Terraform Workspace
-        working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform workspace select ${{ env.TF_WORKSPACE }} || terraform workspace new ${{ env.TF_WORKSPACE }}
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} workspace select ${{ env.TF_WORKSPACE }} || terraform -chdir=${{ env.TF_WORKING_DIR }} workspace new ${{ env.TF_WORKSPACE }}
 
       - name: Terraform Validate
-        working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform validate
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} validate
 
       - name: Terraform Plan
         id: plan
-        working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
-          terraform plan -input=false -out=tfplan
-          terraform show -no-color tfplan > tfplan.txt
+          terraform -chdir=${{ env.TF_WORKING_DIR }} plan -input=false -out=tfplan
+          terraform -chdir=${{ env.TF_WORKING_DIR }} show -no-color tfplan > tfplan.txt
 
       - name: Upload Plan
         uses: actions/upload-artifact@v4
@@ -141,10 +144,21 @@ jobs:
 
       - name: Terraform Apply
         if: env.TF_APPLY_FLAG == 'true'
-        working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform apply -input=false -auto-approve tfplan
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} apply -input=false -auto-approve tfplan
+
+      - name: Confirm destroy
+        if: env.TF_DESTROY_FLAG == 'true'
+        uses: trstringer/manual-approval@v1
+        with:
+          approvers: ${{ vars.APPROVERS || '' }}
+          additional-approvers: ${{ vars.EXEC_APPROVERS || '' }}
+          issue-title: 'Manual Deploy - Destroy Confirmation'
+          issue-body: 'Confirm terraform destroy for workspace `${{ env.TF_WORKSPACE }}`'
+
+      - name: Terraform Destroy
+        if: env.TF_DESTROY_FLAG == 'true'
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} destroy -input=false -auto-approve
 
       - name: Clean up plan files
         if: always()
-        working-directory: ${{ env.TF_WORKING_DIR }}
-        run: rm -f tfplan tfplan.txt
+        run: rm -f ${{ env.TF_WORKING_DIR }}/tfplan ${{ env.TF_WORKING_DIR }}/tfplan.txt
