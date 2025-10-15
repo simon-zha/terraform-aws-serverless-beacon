@@ -6,13 +6,13 @@ terraform {
 
 variable "region" {
   type        = string
-  description = "AWS Region"
+  description = "AWS region"
   default     = "us-east-1"
 }
 
 variable "additional_tags" {
   type        = map(string)
-  description = "additional_tags"
+  description = "Additional tags applied to all resources"
   default     = {}
 }
 
@@ -36,43 +36,43 @@ variable "beacon_description" {
 
 variable "beacon_enable_auth" {
   type        = bool
-  description = "authentication enable"
+  description = "Enable authentication (default false for dev, true for staging/prod)"
   default     = null
 }
 
 variable "beacon_guest_username" {
   type        = string
-  description = "guest account"
+  description = "Guest account username"
   default     = null
 }
 
 variable "beacon_guest_password" {
   type        = string
-  description = "guest password"
+  description = "Guest account password"
   default     = null
 }
 
 variable "beacon_admin_username" {
   type        = string
-  description = "admin username"
+  description = "Admin account username"
   default     = null
 }
 
 variable "beacon_admin_password" {
   type        = string
-  description = "admin pass"
+  description = "Admin account password"
   default     = null
 }
 
 variable "azure_openai_api_key" {
   type        = string
-  description = "Azure OpenAI API Key"
+  description = "Azure OpenAI API key"
   default     = null
 }
 
 variable "azure_openai_endpoint" {
   type        = string
-  description = "Azure OpenAI Endpoint"
+  description = "Azure OpenAI endpoint"
   default     = null
 }
 
@@ -84,19 +84,19 @@ variable "azure_openai_api_version" {
 
 variable "azure_openai_chat_deployment_name" {
   type        = string
-  description = "Azure OpenAI Chat deployment name"
+  description = "Azure OpenAI chat deployment name"
   default     = null
 }
 
 variable "openai_api_key" {
   type        = string
-  description = "OpenAI API Key"
+  description = "OpenAI API key"
   default     = null
 }
 
 locals {
   raw_workspace = terraform.workspace
-  environment = (length(trimspace(coalesce(local.raw_workspace, ""))) == 0 || local.raw_workspace == "default") ? "dev" : local.raw_workspace
+  environment   = (length(trimspace(coalesce(local.raw_workspace, ""))) == 0 || local.raw_workspace == "default") ? "dev" : local.raw_workspace
 
   env_defaults = {
     dev = {
@@ -159,4 +159,3 @@ module "serverless_beacon" {
 
   openai-api-key = var.openai_api_key
 }
-
