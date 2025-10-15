@@ -1,0 +1,25 @@
+name: 'Test AWS Authentication'
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  test-auth:
+    name: 'Verify AWS Role Assumption'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: 'Run AWS STS GetCallerIdentity to Verify'
+        run: |
+          echo "Verifying AWS identity..."
+          aws sts get-caller-identity
