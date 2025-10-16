@@ -41,10 +41,10 @@ jobs:
     env:
       AWS_REGION: ${{ inputs.aws_region != '' && inputs.aws_region || vars.AWS_REGION || 'ap-southeast-2' }}
       TF_WORKING_DIR: ${{ github.workspace }}/environments
-      TARGET_WORKSPACE: ${{ inputs.workspace }}
-      TF_APPLY_FLAG: ${{ inputs.apply }}
-      TF_DESTROY_FLAG: ${{ inputs.trigger_destroy }}
-      TF_BACKEND_CONFIG: ${{ inputs.backend_config }}
+      TARGET_WORKSPACE: ${{ inputs.workspace != '' && inputs.workspace || 'dev' }}
+      TF_APPLY_FLAG: ${{ inputs.apply != '' && inputs.apply || 'true' }}
+      TF_DESTROY_FLAG: ${{ inputs.trigger_destroy != '' && inputs.trigger_destroy || 'false' }}
+      TF_BACKEND_CONFIG: ${{ inputs.backend_config != '' && inputs.backend_config || 'backend-dev.hcl' }}
       TF_IN_AUTOMATION: true
       TF_INPUT: false
       TF_VAR_region: ${{ inputs.aws_region != '' && inputs.aws_region || vars.AWS_REGION || 'ap-southeast-2' }}
@@ -172,3 +172,4 @@ jobs:
       - name: Clean up plan files
         if: always()
         run: rm -f ${{ env.TF_WORKING_DIR }}/tfplan ${{ env.TF_WORKING_DIR }}/tfplan.txt ${{ env.TF_WORKING_DIR }}/tfplan-updated
+
