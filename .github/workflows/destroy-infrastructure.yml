@@ -1,0 +1,130 @@
+name: Destroy Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      workspace:
+        description: "Terraform workspace to destroy (dev/staging/prod)"
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      confirm_destroy:
+        description: "Type 'DESTROY' to confirm deletion of all resources"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  destroy:
+    name: Destroy Infrastructure
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.workspace }}
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+      TF_WORKING_DIR: environments
+      TARGET_WORKSPACE: ${{ inputs.workspace }}
+      TF_IN_AUTOMATION: true
+      TF_INPUT: false
+      TF_VAR_region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+      TF_VAR_beacon_admin_username: ${{ secrets.BEACON_ADMIN_USERNAME }}
+      TF_VAR_beacon_admin_password: ${{ secrets.BEACON_ADMIN_PASSWORD }}
+      TF_VAR_beacon_guest_username: ${{ secrets.BEACON_GUEST_USERNAME }}
+      TF_VAR_beacon_guest_password: ${{ secrets.BEACON_GUEST_PASSWORD }}
+      TF_VAR_azure_openai_api_key: ${{ secrets.AZURE_OPENAI_API_KEY }}
+      TF_VAR_azure_openai_endpoint: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+      TF_VAR_azure_openai_api_version: ${{ secrets.AZURE_OPENAI_API_VERSION }}
+      TF_VAR_azure_openai_chat_deployment_name: ${{ secrets.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME }}
+      TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify destroy confirmation
+        run: |
+          if [ "${{ inputs.confirm_destroy }}" != "DESTROY" ]; then
+            echo "销毁确认失败！请输入 'DESTROY' 来确认删除所有资源"
+            exit 1
+          fi
+          echo "销毁确认通过"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.4
+
+      - name: Terraform Init
+        run: |
+          BACKEND_CONFIG="backend-${{ inputs.workspace }}.hcl"
+          terraform -chdir=${{ env.TF_WORKING_DIR }} init -input=false -upgrade -backend-config="$BACKEND_CONFIG"
+
+      - name: Select Terraform Workspace
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} workspace select ${{ env.TARGET_WORKSPACE }} || terraform -chdir=${{ env.TF_WORKING_DIR }} workspace new ${{ env.TARGET_WORKSPACE }}
+
+      - name: Terraform Refresh
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} refresh -input=false
+
+      - name: List Resources
+        run: |
+          echo "📋 当前资源列表："
+          terraform -chdir=${{ env.TF_WORKING_DIR }} state list || echo "无法获取资源列表"
+
+      - name: Terraform Plan (Destroy)
+        id: plan-destroy
+        run: |
+          terraform -chdir=${{ env.TF_WORKING_DIR }} plan -destroy -input=false -out=destroy-plan
+          terraform -chdir=${{ env.TF_WORKING_DIR }} show -no-color destroy-plan > destroy-plan.txt
+
+      - name: Upload Destroy Plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: destroy-plan-${{ inputs.workspace }}-${{ github.run_id }}
+          path: ${{ env.TF_WORKING_DIR }}/destroy-plan.txt
+
+      - name: Manual Approval for Destroy
+        uses: trstringer/manual-approval@v1
+        with:
+          approvers: ${{ vars.APPROVERS || '' }}
+          issue-title: '🚨 DESTROY CONFIRMATION - ${{ inputs.workspace }} Environment'
+          issue-body: |
+            **WARNING: This will destroy ALL resources in the ${{ inputs.workspace }} environment!**
+            
+            **Resources to be destroyed:**
+            ```
+            ${{ steps.plan-destroy.outputs.stdout }}
+            ```
+            
+            **This action cannot be undone!**
+            
+            Please review the destroy plan carefully before approving.
+
+      - name: Terraform Destroy
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} apply -input=false -auto-approve destroy-plan
+
+      - name: Clean up plan files
+        if: always()
+        run: rm -f ${{ env.TF_WORKING_DIR }}/destroy-plan ${{ env.TF_WORKING_DIR }}/destroy-plan.txt
+
+      - name: Verify Destruction
+        run: |
+          echo "🔍 验证资源是否已完全删除..."
+          RESOURCES=$(terraform -chdir=${{ env.TF_WORKING_DIR }} state list 2>/dev/null || echo "")
+          if [ -n "$RESOURCES" ]; then
+            echo "仍有资源残留："
+            echo "$RESOURCES"
+            echo "可能需要手动清理"
+          else
+            echo "所有资源已成功删除"
+          fi
