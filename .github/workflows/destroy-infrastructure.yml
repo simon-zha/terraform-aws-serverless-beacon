@@ -96,7 +96,8 @@ jobs:
       - name: Manual Approval for Destroy
         uses: trstringer/manual-approval@v1
         with:
-          approvers: ${{ vars.APPROVERS || '' }}
+          approvers: ${{ vars.APPROVERS || github.actor }}
+          secret: ${{ secrets.GITHUB_TOKEN }}
           issue-title: 'DESTROY CONFIRMATION - ${{ inputs.workspace }} Environment'
           issue-body: 'WARNING: This will destroy ALL resources in the ${{ inputs.workspace }} environment! This action cannot be undone!'
 
