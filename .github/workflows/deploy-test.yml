@@ -22,17 +22,19 @@ on:
       trigger_destroy:
         description: "Run terraform destroy after completion (true/false)"
         required: false
-        default: "true"
+        default: "false"
 
 permissions:
   contents: read
   id-token: write
+  issues: write
+  pull-requests: write
 
 jobs:
   deploy:
     name: Manual Terraform Deploy
     runs-on: ubuntu-latest
-    environment: dev
+    environment: ${{ inputs.workspace == 'dev' && 'dev' || inputs.workspace == 'staging' && 'staging' || inputs.workspace == 'prod' && 'prod' || 'dev' }}
     env:
       AWS_REGION: ${{ inputs.aws_region != '' && inputs.aws_region || vars.AWS_REGION || 'ap-southeast-2' }}
       TF_WORKING_DIR: ${{ github.workspace }}/environments
@@ -153,10 +155,12 @@ jobs:
         if: env.TF_DESTROY_FLAG == 'true'
         uses: trstringer/manual-approval@v1
         with:
-          approvers: ${{ vars.APPROVERS || github.actor }}
+          approvers: ${{ github.actor }}
           secret: ${{ secrets.GITHUB_TOKEN }}
           issue-title: 'Manual Deploy - Destroy Confirmation'
           issue-body: 'Confirm terraform destroy for workspace `${{ env.TARGET_WORKSPACE }}`'
+          exclude-workflow-initiator-as-approver: false
+          fail-on-denial: true
 
       - name: Terraform Destroy
         if: env.TF_DESTROY_FLAG == 'true'
