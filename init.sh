@@ -28,6 +28,15 @@ mkdir "${SOURCE}"
 cd ${SOURCE}
 git clone --recursive --depth 1 --branch develop https://github.com/samtools/htslib.git 
 cd htslib && autoreconf --install --force && ./configure --enable-libcurl && make tabix
+if [ ! -f "tabix" ]; then
+  echo "Error: tabix binary not found after compilation"
+  echo "Contents of htslib directory:"
+  ls -la
+  echo "Make output:"
+  make tabix
+  exit 1
+fi
+echo "tabix binary created successfully"
 cd ${REPOSITORY_DIRECTORY}
 mkdir -p layers/binaries/lib
 mkdir -p layers/binaries/bin
@@ -39,6 +48,15 @@ cp ${SOURCE}/htslib/tabix ./layers/binaries/bin/
 cd ${SOURCE}
 git clone --recursive --depth 1 --branch develop https://github.com/samtools/bcftools.git
 cd bcftools && autoreconf --install --force && ./configure && make
+if [ ! -f "bcftools" ]; then
+  echo "Error: bcftools binary not found after compilation"
+  echo "Contents of bcftools directory:"
+  ls -la
+  echo "Make output:"
+  make
+  exit 1
+fi
+echo "bcftools binary created successfully"
 cd ${REPOSITORY_DIRECTORY}
 mkdir -p layers/binaries/lib
 mkdir -p layers/binaries/bin
