@@ -85,39 +85,6 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Log in to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Ensure ECR repositories exist
-        run: |
-          for repo in sbeacon-analytics-lambda-containers sbeacon-askbeacon-lambda-containers; do
-            if ! aws ecr describe-repositories --repository-names "$repo" --region "$AWS_REGION" >/dev/null 2>&1; then
-              aws ecr create-repository --repository-name "$repo" --region "$AWS_REGION"
-            fi
-          done
-
-      - name: Build analytics lambda image
-        working-directory: lambda/analytics
-        run: docker build -t ${{ steps.login-ecr.outputs.registry }}/sbeacon-analytics-lambda-containers:latest .
-
-      - name: Build askbeacon lambda image
-        working-directory: lambda/askbeacon
-        run: docker build -t ${{ steps.login-ecr.outputs.registry }}/sbeacon-askbeacon-lambda-containers:latest .
-
-      - name: Push analytics lambda image
-        run: docker push ${{ steps.login-ecr.outputs.registry }}/sbeacon-analytics-lambda-containers:latest
-
-      - name: Push askbeacon lambda image
-        run: docker push ${{ steps.login-ecr.outputs.registry }}/sbeacon-askbeacon-lambda-containers:latest
-
-      - name: Capture image digests for Terraform
-        run: |
-          analytics=$(docker inspect --format='{{index .RepoDigests 0}}' ${{ steps.login-ecr.outputs.registry }}/sbeacon-analytics-lambda-containers:latest)
-          askbeacon=$(docker inspect --format='{{index .RepoDigests 0}}' ${{ steps.login-ecr.outputs.registry }}/sbeacon-askbeacon-lambda-containers:latest)
-          echo "TF_VAR_analytics_lambda_image_uri=${analytics}" >> $GITHUB_ENV
-          echo "TF_VAR_askbeacon_lambda_image_uri=${askbeacon}" >> $GITHUB_ENV
-
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
@@ -144,7 +111,38 @@ jobs:
           name: manual-terraform-plan-${{ github.run_id }}
           path: ${{ env.TF_WORKING_DIR }}/tfplan.txt
 
-      - name: Terraform Apply
+      - name: Terraform Apply (ECR repositories only)
+        if: env.TF_APPLY_FLAG == 'true'
+        run: |
+          # Apply only ECR repositories first
+          terraform -chdir=${{ env.TF_WORKING_DIR }} apply -input=false -auto-approve -target=module.serverless_beacon.module.docker_image_analytics_lambda.aws_ecr_repository.this[0] -target=module.serverless_beacon.module.docker_image_askbeacon_lambda.aws_ecr_repository.this[0] tfplan
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build analytics lambda image
+        working-directory: lambda/analytics
+        run: docker build -t ${{ steps.login-ecr.outputs.registry }}/sbeacon-analytics-lambda-containers:latest .
+
+      - name: Build askbeacon lambda image
+        working-directory: lambda/askbeacon
+        run: docker build -t ${{ steps.login-ecr.outputs.registry }}/sbeacon-askbeacon-lambda-containers:latest .
+
+      - name: Push analytics lambda image
+        run: docker push ${{ steps.login-ecr.outputs.registry }}/sbeacon-analytics-lambda-containers:latest
+
+      - name: Push askbeacon lambda image
+        run: docker push ${{ steps.login-ecr.outputs.registry }}/sbeacon-askbeacon-lambda-containers:latest
+
+      - name: Capture image digests for Terraform
+        run: |
+          analytics=$(docker inspect --format='{{index .RepoDigests 0}}' ${{ steps.login-ecr.outputs.registry }}/sbeacon-analytics-lambda-containers:latest)
+          askbeacon=$(docker inspect --format='{{index .RepoDigests 0}}' ${{ steps.login-ecr.outputs.registry }}/sbeacon-askbeacon-lambda-containers:latest)
+          echo "TF_VAR_analytics_lambda_image_uri=${analytics}" >> $GITHUB_ENV
+          echo "TF_VAR_askbeacon_lambda_image_uri=${askbeacon}" >> $GITHUB_ENV
+
+      - name: Terraform Apply (remaining resources)
         if: env.TF_APPLY_FLAG == 'true'
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} apply -input=false -auto-approve tfplan
 
