@@ -1,75 +1,54 @@
-name: Manual Deploy
+name: Deploy Dev
 
 on:
+  push:
+    branches:
+      - develop
+    paths:
+      - '**/*.tf'
+      - '**/*.tfvars'
+      - 'lambda/**'
+      - 'layers/**'
+      - '.github/workflows/deploy-dev.yml'
   workflow_dispatch:
-    inputs:
-      apply:
-        description: "Start terraform apply (true/false)"
-        required: false
-        default: "true"
-      backend_config:
-        description: "Backend HCL file (default: backend-dev.hcl)"
-        required: false
-        default: "backend-dev.hcl"
-      workspace:
-        description: "Terraform workspace (default: dev)"
-        required: false
-        default: "dev"
-      aws_region:
-        description: "AWS region override (optional)"
-        required: false
-        default: "ap-southeast-2"
-      trigger_destroy:
-        description: "Run terraform destroy after completion (true/false)"
-        required: false
-        default: "false"
+
+concurrency:
+  group: terraform-dev
+  cancel-in-progress: false
 
 permissions:
   contents: read
   id-token: write
 
 jobs:
-  deploy:
-    name: Manual Terraform Deploy
+  build-plan-and-apply:
+    name: Build Docker & Deploy Terraform (Dev)
     runs-on: ubuntu-latest
     environment: dev
     env:
-      AWS_REGION: ${{ inputs.aws_region != '' && inputs.aws_region || vars.AWS_REGION || 'ap-southeast-2' }}
-      TF_WORKING_DIR: ${{ github.workspace }}/environments
-      TARGET_WORKSPACE: ${{ inputs.workspace }}
-      TF_APPLY_FLAG: ${{ inputs.apply }}
-      TF_DESTROY_FLAG: ${{ inputs.trigger_destroy }}
-      TF_BACKEND_CONFIG: ${{ inputs.backend_config }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TF_WORKING_DIR: environments
+      TF_WORKSPACE: dev
+      TF_APPLY: ${{ github.event_name == 'push' }}
+      TF_APPLY_DISPATCH: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply == 'true' }}
       TF_IN_AUTOMATION: true
       TF_INPUT: false
-      TF_VAR_region: ${{ inputs.aws_region != '' && inputs.aws_region || vars.AWS_REGION || 'ap-southeast-2' }}
-      TF_VAR_beacon_admin_username: ${{ secrets.BEACON_ADMIN_USERNAME }}
-      TF_VAR_beacon_admin_password: ${{ secrets.BEACON_ADMIN_PASSWORD }}
-      TF_VAR_beacon_guest_username: ${{ secrets.BEACON_GUEST_USERNAME }}
-      TF_VAR_beacon_guest_password: ${{ secrets.BEACON_GUEST_PASSWORD }}
-      TF_VAR_azure_openai_api_key: ${{ secrets.AZURE_OPENAI_API_KEY }}
-      TF_VAR_azure_openai_endpoint: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
-      TF_VAR_azure_openai_api_version: ${{ secrets.AZURE_OPENAI_API_VERSION }}
-      TF_VAR_azure_openai_chat_deployment_name: ${{ secrets.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME }}
-      TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
       - name: Install build toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential autoconf automake libtool pkg-config zlib1g-dev libcurl4-openssl-dev
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install build helper dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r docker/requirements.txt
-      - name: Init script
+      - name: Run init script
         run: |
           chmod +x ./init.sh
           ./init.sh
@@ -82,23 +61,9 @@ jobs:
         working-directory: lambda/askbeacon
         run: python docker_prep.py
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
       - name: Log in to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Ensure ECR repositories exist
-        run: |
-          for repo in sbeacon-analytics-lambda-containers sbeacon-askbeacon-lambda-containers; do
-            if ! aws ecr describe-repositories --repository-names "$repo" --region "$AWS_REGION" >/dev/null 2>&1; then
-              aws ecr create-repository --repository-name "$repo" --region "$AWS_REGION"
-            fi
-          done
 
       - name: Build analytics lambda image
         working-directory: lambda/analytics
@@ -114,56 +79,62 @@ jobs:
       - name: Push askbeacon lambda image
         run: docker push ${{ steps.login-ecr.outputs.registry }}/sbeacon-askbeacon-lambda-containers:latest
 
-      - name: Capture image digests for Terraform
+      - name: Configure image digests for Terraform
         run: |
           analytics=$(docker inspect --format='{{index .RepoDigests 0}}' ${{ steps.login-ecr.outputs.registry }}/sbeacon-analytics-lambda-containers:latest)
           askbeacon=$(docker inspect --format='{{index .RepoDigests 0}}' ${{ steps.login-ecr.outputs.registry }}/sbeacon-askbeacon-lambda-containers:latest)
           echo "TF_VAR_analytics_lambda_image_uri=${analytics}" >> $GITHUB_ENV
           echo "TF_VAR_askbeacon_lambda_image_uri=${askbeacon}" >> $GITHUB_ENV
 
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install frontend dependencies
+        working-directory: ui
+        run: npm ci
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.9.4
 
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive
+
       - name: Terraform Init
-        run: terraform -chdir=${{ env.TF_WORKING_DIR }} init -input=false -upgrade -backend-config=${{ env.TF_BACKEND_CONFIG }}
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -input=false -upgrade -backend-config=backend-dev.hcl
 
       - name: Select Terraform Workspace
-        run: terraform -chdir=${{ env.TF_WORKING_DIR }} workspace select ${{ env.TARGET_WORKSPACE }} || terraform -chdir=${{ env.TF_WORKING_DIR }} workspace new ${{ env.TARGET_WORKSPACE }}
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform workspace select ${{ env.TF_WORKSPACE }} || terraform workspace new ${{ env.TF_WORKSPACE }}
 
       - name: Terraform Validate
-        run: terraform -chdir=${{ env.TF_WORKING_DIR }} validate
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform validate
 
       - name: Terraform Plan
         id: plan
+        working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
-          terraform -chdir=${{ env.TF_WORKING_DIR }} plan -input=false -out=tfplan
-          terraform -chdir=${{ env.TF_WORKING_DIR }} show -no-color tfplan > ${{ env.TF_WORKING_DIR }}/tfplan.txt
+          terraform plan -input=false -out=tfplan
+          terraform show -no-color tfplan > tfplan.txt
 
       - name: Upload Plan
         uses: actions/upload-artifact@v4
         with:
-          name: manual-terraform-plan-${{ github.run_id }}
+          name: dev-terraform-plan-${{ github.run_id }}
           path: ${{ env.TF_WORKING_DIR }}/tfplan.txt
 
       - name: Terraform Apply
-        if: env.TF_APPLY_FLAG == 'true'
-        run: terraform -chdir=${{ env.TF_WORKING_DIR }} apply -input=false -auto-approve tfplan
+        if: env.TF_APPLY == 'true' || env.TF_APPLY_DISPATCH == 'true'
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform apply -input=false -auto-approve tfplan
 
-      - name: Confirm destroy
-        if: env.TF_DESTROY_FLAG == 'true'
-        uses: trstringer/manual-approval@v1
-        with:
-          approvers: ${{ vars.APPROVERS || '' }}
-          additional-approvers: ${{ vars.EXEC_APPROVERS || '' }}
-          issue-title: 'Manual Deploy - Destroy Confirmation'
-          issue-body: 'Confirm terraform destroy for workspace `${{ env.TARGET_WORKSPACE }}`'
-
-      - name: Terraform Destroy
-        if: env.TF_DESTROY_FLAG == 'true'
-        run: terraform -chdir=${{ env.TF_WORKING_DIR }} destroy -input=false -auto-approve
-
-      - name: Clean up plan files
+      - name: Clean up plan
         if: always()
-        run: rm -f ${{ env.TF_WORKING_DIR }}/tfplan ${{ env.TF_WORKING_DIR }}/tfplan.txt
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: rm -f tfplan tfplan.txt
+
