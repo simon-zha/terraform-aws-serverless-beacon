@@ -49,10 +49,10 @@ jobs:
       - name: Verify destroy confirmation
         run: |
           if [ "${{ inputs.confirm_destroy }}" != "DESTROY" ]; then
-            echo "销毁确认失败！请输入 'DESTROY' 来确认删除所有资源"
+            echo "❌ 销毁确认失败！请输入 'DESTROY' 来确认删除所有资源"
             exit 1
           fi
-          echo "销毁确认通过"
+          echo "✅ 销毁确认通过"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -85,7 +85,7 @@ jobs:
         id: plan-destroy
         run: |
           terraform -chdir=${{ env.TF_WORKING_DIR }} plan -destroy -input=false -out=destroy-plan
-          terraform -chdir=${{ env.TF_WORKING_DIR }} show -no-color destroy-plan > destroy-plan.txt
+          terraform -chdir=${{ env.TF_WORKING_DIR }} show -no-color destroy-plan > ${{ env.TF_WORKING_DIR }}/destroy-plan.txt
 
       - name: Upload Destroy Plan
         uses: actions/upload-artifact@v4
@@ -97,18 +97,8 @@ jobs:
         uses: trstringer/manual-approval@v1
         with:
           approvers: ${{ vars.APPROVERS || '' }}
-          issue-title: '🚨 DESTROY CONFIRMATION - ${{ inputs.workspace }} Environment'
-          issue-body: |
-            **WARNING: This will destroy ALL resources in the ${{ inputs.workspace }} environment!**
-            
-            **Resources to be destroyed:**
-            ```
-            ${{ steps.plan-destroy.outputs.stdout }}
-            ```
-            
-            **This action cannot be undone!**
-            
-            Please review the destroy plan carefully before approving.
+          issue-title: 'DESTROY CONFIRMATION - ${{ inputs.workspace }} Environment'
+          issue-body: 'WARNING: This will destroy ALL resources in the ${{ inputs.workspace }} environment! This action cannot be undone!'
 
       - name: Terraform Destroy
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} apply -input=false -auto-approve destroy-plan
@@ -122,9 +112,9 @@ jobs:
           echo "🔍 验证资源是否已完全删除..."
           RESOURCES=$(terraform -chdir=${{ env.TF_WORKING_DIR }} state list 2>/dev/null || echo "")
           if [ -n "$RESOURCES" ]; then
-            echo "仍有资源残留："
+            echo "⚠️ 仍有资源残留："
             echo "$RESOURCES"
             echo "可能需要手动清理"
           else
-            echo "所有资源已成功删除"
+            echo "✅ 所有资源已成功删除"
           fi
