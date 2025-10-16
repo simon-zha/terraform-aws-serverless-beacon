@@ -144,7 +144,10 @@ jobs:
 
       - name: Terraform Apply (remaining resources)
         if: env.TF_APPLY_FLAG == 'true'
-        run: terraform -chdir=${{ env.TF_WORKING_DIR }} apply -input=false -auto-approve tfplan
+        run: |
+          # Regenerate plan after ECR repositories were created
+          terraform -chdir=${{ env.TF_WORKING_DIR }} plan -input=false -out=tfplan-updated
+          terraform -chdir=${{ env.TF_WORKING_DIR }} apply -input=false -auto-approve tfplan-updated
 
       - name: Confirm destroy
         if: env.TF_DESTROY_FLAG == 'true'
@@ -161,4 +164,4 @@ jobs:
 
       - name: Clean up plan files
         if: always()
-        run: rm -f ${{ env.TF_WORKING_DIR }}/tfplan ${{ env.TF_WORKING_DIR }}/tfplan.txt
+        run: rm -f ${{ env.TF_WORKING_DIR }}/tfplan ${{ env.TF_WORKING_DIR }}/tfplan.txt ${{ env.TF_WORKING_DIR }}/tfplan-updated
