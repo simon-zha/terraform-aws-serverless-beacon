@@ -22,7 +22,7 @@ on:
       trigger_destroy:
         description: "Run terraform destroy after completion (true/false)"
         required: false
-        default: "false"
+        default: "true"
 
 permissions:
   contents: read
@@ -153,8 +153,8 @@ jobs:
         if: env.TF_DESTROY_FLAG == 'true'
         uses: trstringer/manual-approval@v1
         with:
-          approvers: ${{ vars.APPROVERS || '' }}
-          additional-approvers: ${{ vars.EXEC_APPROVERS || '' }}
+          approvers: ${{ vars.APPROVERS || github.actor }}
+          secret: ${{ secrets.GITHUB_TOKEN }}
           issue-title: 'Manual Deploy - Destroy Confirmation'
           issue-body: 'Confirm terraform destroy for workspace `${{ env.TARGET_WORKSPACE }}`'
 
