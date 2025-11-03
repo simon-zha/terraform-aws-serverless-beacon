@@ -154,6 +154,26 @@ jobs:
           terraform -chdir=${{ env.TF_WORKING_DIR }} plan -input=false -out=tfplan-updated
           terraform -chdir=${{ env.TF_WORKING_DIR }} apply -input=false -auto-approve tfplan-updated
 
+      - name: Capture API URL (post-deploy)
+        if: env.TF_APPLY_FLAG == 'true'
+        run: |
+          # Try to read the api_url output (raw). If that fails, fall back to json parsing.
+          set -euo pipefail
+          echo "Retrieving api_url from terraform outputs..."
+          if terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw api_url > post_deploy_info.txt 2>/dev/null; then
+            echo "Captured api_url"
+          else
+            echo "Falling back to json output parsing"
+            terraform -chdir=${{ env.TF_WORKING_DIR }} output -json api_url | python -c "import sys, json; print(json.load(sys.stdin))" > post_deploy_info.txt
+          fi
+
+      - name: Upload post-deploy info
+        if: env.TF_APPLY_FLAG == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: post-deploy-info-${{ github.run_id }}
+          path: post_deploy_info.txt
+
       - name: Confirm destroy
         if: env.TF_DESTROY_FLAG == 'true'
         uses: trstringer/manual-approval@v1

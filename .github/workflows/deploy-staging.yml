@@ -21,4 +21,25 @@
 #     - name: Docker build
 #     - name: Docker push
 #     - name: Deploy to dev environment
+#
+#     # Example: capture and upload api_url after successful terraform apply
+#     # Uncomment and adapt below to enable automatic post-deploy artifact upload
+#     #      - name: Capture API URL (post-deploy)
+#     #        if: env.TF_APPLY_FLAG == 'true'
+#     #        run: |
+#     #          set -euo pipefail
+#     #          echo "Retrieving api_url from terraform outputs..."
+#     #          if terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw api_url > post_deploy_info.txt 2>/dev/null; then
+#     #            echo "Captured api_url"
+#     #          else
+#     #            echo "Falling back to json output parsing"
+#     #            terraform -chdir=${{ env.TF_WORKING_DIR }} output -json api_url | python -c "import sys, json; print(json.load(sys.stdin))" > post_deploy_info.txt
+#     #          fi
+#     #
+#     #      - name: Upload post-deploy info
+#     #        if: env.TF_APPLY_FLAG == 'true'
+#     #        uses: actions/upload-artifact@v4
+#     #        with:
+#     #          name: post-deploy-info-${{ github.run_id }}
+#     #          path: post_deploy_info.txt
 

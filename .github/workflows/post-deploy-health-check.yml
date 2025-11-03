@@ -1,0 +1,48 @@
+name: Post-deploy Health Check
+
+on:
+  workflow_run:
+    workflows:
+      - "Deploy Dev Environment"
+      - "Deploy Staging Environment"
+      - "Deploy Production Environment"
+    types:
+      - completed
+
+jobs:
+  health_check:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download post-deploy artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: post-deploy-info-${{ github.event.workflow_run.id }}
+          path: post_deploy_info
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Read API URL
+        id: read_url
+        run: |
+          set -euo pipefail
+          if [ -f post_deploy_info/post_deploy_info.txt ]; then
+            url=$(cat post_deploy_info/post_deploy_info.txt)
+          elif [ -f post_deploy_info/post_deploy_info.json ]; then
+            url=$(cat post_deploy_info/post_deploy_info.json)
+          else
+            # try any file in the folder
+            url=$(ls post_deploy_info | head -n1 | xargs -I{} cat post_deploy_info/{})
+          fi
+          echo "api_url=${url}" >> $GITHUB_OUTPUT
+
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run health check
+        run: |
+          python scripts/health_check.py --url "${{ steps.read_url.outputs.api_url }}" --retries 6 --timeout 8 --backoff 2
