@@ -112,6 +112,12 @@ jobs:
           docker tag ${{ steps.img.outputs.IMAGE }}:${{ steps.img.outputs.TAG }} ${{ steps.img.outputs.REGISTRY }}/${{ steps.img.outputs.IMAGE }}:${{ steps.img.outputs.TAG }}
           docker push ${{ steps.img.outputs.REGISTRY }}/${{ steps.img.outputs.IMAGE }}:${{ steps.img.outputs.TAG }}
 
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}  # 你的 OIDC 角色 ARN
+          aws-region: ${{ env.AWS_REGION }}
+          
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
