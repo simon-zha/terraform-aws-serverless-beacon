@@ -6,7 +6,7 @@ on:
     branches:
       - 'release'
       - 'release/**'
-    types: [ closed ]        # 仅当 PR 合并到 release 时触发
+    types: [ closed ]
   workflow_dispatch:
     inputs:
       apply:
