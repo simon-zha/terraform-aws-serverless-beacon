@@ -1,24 +1,145 @@
-# # .github/workflows/deploy-staging.yml
-# name: Deploy Staging Environment
+# .github/workflows/deploy-staging.yml
+name: Staging Deploy (release & hotfix)
 
-# Staging and Hotfix branch only allow merge
-# on:
-#   push:
-#     branches:
-#       - 'release/**'
-#       - 'hotfix/**'
-# jobs:
-#   terraform_deploy_staging:
-#     runs-on: ubuntu-latest
-#     environment: staging
-#     steps:
-#     - name: Checkout Code
-#       uses: actions/checkout@v4
-#     # in progress
-#     - name: Configure AWS Credentials 
-#     - name: Setup Terraform
-#       uses: hashicorp/setup-terraform@v3
-#     - name: Docker build
-#     - name: Docker push
-#     - name: Deploy to dev environment
+on:
+  pull_request:
+    branches:
+      - 'release'
+      - 'release/**'
+      - 'hotfix'
+      - 'hotfix/**'
+    types: [opened, synchronize, reopened, closed]
 
+permissions:
+  id-token: write    # OIDC for cloud auth
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: staging-release
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}      # e.g. myapp-staging
+  TF_WORKING_DIR: environments                     # adjust to your repo layout
+  TF_BACKEND_CONFIG: backend-staging.hcl          # path inside repo
+  TF_WORKSPACE: staging
+
+jobs:
+  validate:
+    if: github.event.action != 'closed' # run for PR open/update, not on close
+    name: Validate & Plan (PR)
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.5
+
+      - name: Terraform Init
+        run: |
+          terraform -chdir=${{ env.TF_WORKING_DIR }} init \
+            -input=false -upgrade \
+            -backend-config=${{ env.TF_BACKEND_CONFIG }}
+
+      - name: Select/Create Workspace
+        run: |
+          terraform -chdir=${{ env.TF_WORKING_DIR }} workspace select ${{ env.TF_WORKSPACE }} \
+            || terraform -chdir=${{ env.TF_WORKING_DIR }} workspace new ${{ env.TF_WORKSPACE }}
+
+      - name: Terraform Validate
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} validate
+
+      - name: Terraform Plan (no apply)
+        run: |
+          terraform -chdir=${{ env.TF_WORKING_DIR }} plan -input=false -out=tfplan
+          terraform -chdir=${{ env.TF_WORKING_DIR }} show -no-color tfplan > ${{ env.TF_WORKING_DIR }}/tfplan.txt
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-staging
+          path: ${{ env.TF_WORKING_DIR }}/tfplan.txt
+
+      - name: Comment plan to PR (optional)
+        uses: thollander/actions-comment-pull-request@v2
+        with:
+          filePath: ${{ env.TF_WORKING_DIR }}/tfplan.txt
+          comment_includes_file: true
+          fail_on_error: false
+
+  deploy:
+    # Deploy only when PR is merged into release/** or hotfix/**
+    if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true
+    name: Build Image & Deploy (staging)
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: ${{ vars.STAGING_BASE_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Compute image coordinates
+        id: img
+        run: |
+          echo "REGISTRY=${{ steps.login-ecr.outputs.registry }}" >> $GITHUB_OUTPUT
+          echo "IMAGE=${{ env.ECR_REPOSITORY }}" >> $GITHUB_OUTPUT
+          echo "TAG=${GITHUB_SHA}" >> $GITHUB_OUTPUT
+          echo "URI=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${GITHUB_SHA}" >> $GITHUB_OUTPUT
+
+      - name: Docker build
+        run: |
+          docker build -t ${{ steps.img.outputs.IMAGE }}:${{ steps.img.outputs.TAG }} .
+
+      - name: Docker tag & push
+        run: |
+          docker tag ${{ steps.img.outputs.IMAGE }}:${{ steps.img.outputs.TAG }} ${{ steps.img.outputs.REGISTRY }}/${{ steps.img.outputs.IMAGE }}:${{ steps.img.outputs.TAG }}
+          docker push ${{ steps.img.outputs.REGISTRY }}/${{ steps.img.outputs.IMAGE }}:${{ steps.img.outputs.TAG }}
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}  # 你的 OIDC 角色 ARN
+          aws-region: ${{ env.AWS_REGION }}
+          
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.5
+
+      - name: Terraform Init
+        run: |
+          terraform -chdir=${{ env.TF_WORKING_DIR }} init \
+            -input=false -upgrade \
+            -backend-config=${{ env.TF_BACKEND_CONFIG }}
+
+      - name: Select/Create Workspace
+        run: |
+          terraform -chdir=${{ env.TF_WORKING_DIR }} workspace select ${{ env.TF_WORKSPACE }} \
+            || terraform -chdir=${{ env.TF_WORKING_DIR }} workspace new ${{ env.TF_WORKSPACE }}
+
+      - name: Terraform Plan (with image vars)
+        run: |
+          terraform -chdir=${{ env.TF_WORKING_DIR }} plan \
+            -input=false -out=tfplan \
+            -var="image_uri=${{ steps.img.outputs.URI }}" \
+            -var="image_tag=${{ steps.img.outputs.TAG }}"
+
+      - name: Terraform Apply
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} apply -input=false -auto-approve tfplan
