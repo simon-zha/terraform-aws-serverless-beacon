@@ -16,14 +16,12 @@ on:
         description: 'Apply changes?'
         required: false
         default: 'true'
-      destroy:
-        description: 'Destroy env? (dev only)'
-        required: false
-        default: 'false'
 
 permissions:
   id-token: write
   contents: read
+  issues: write
+  pull-requests: write
 
 jobs:
   decide:
@@ -66,7 +64,6 @@ jobs:
     uses: ./.github/workflows/deploy-autoenv-dev.yml
     with:
       apply: ${{ needs.decide.outputs.APPLY == 'true' }}
-      destroy: ${{ needs.decide.outputs.DESTROY == 'true' }}
     secrets: inherit
 
 # Remove comments when workflows below are finished
