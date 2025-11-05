@@ -1,40 +1,69 @@
 # .github/workflows/deploy-staging.yml
-name: Staging Deploy (release & hotfix)
+name: Deploy Staging Environment
 
 on:
   pull_request:
     branches:
       - 'release'
       - 'release/**'
-      - 'hotfix'
-      - 'hotfix/**'
-    types: [opened, synchronize, reopened, closed]
+    types: [ closed ]
 
 permissions:
-  id-token: write    # OIDC for cloud auth
-  contents: read
-  pull-requests: write
+  contents: write
+  id-token: write
 
 concurrency:
   group: staging-release
   cancel-in-progress: true
 
-env:
-  AWS_REGION: ${{ vars.AWS_REGION }}
-  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}      # e.g. myapp-staging
-  TF_WORKING_DIR: environments                     # adjust to your repo layout
-  TF_BACKEND_CONFIG: backend-staging.hcl          # path inside repo
-  TF_WORKSPACE: staging
-
 jobs:
-  validate:
-    if: github.event.action != 'closed' # run for PR open/update, not on close
-    name: Validate & Plan (PR)
+  deploy:
+    if: >
+      github.event.pull_request.merged == true &&
+      (github.event.pull_request.base.ref == 'release' || startsWith(github.event.pull_request.base.ref, 'release/')) &&
+      github.event.pull_request.head.ref == 'develop'
     runs-on: ubuntu-latest
-    environment: staging
+    environment:
+      name: staging
+      url: ${{ vars.STAGING_BASE_URL }}
+
+    env:
+      AWS_REGION:        ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+      TF_WORKING_DIR:    ${{ github.workspace }}/environments
+      TARGET_WORKSPACE:  staging
+      TF_APPLY_FLAG:     true
+      TF_DESTROY_FLAG:   false
+      TF_BACKEND_CONFIG: backend-staging.hcl
+      TF_IN_AUTOMATION:  true
+      TF_INPUT:          false
+
+      TF_VAR_region:                             ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+      TF_VAR_beacon_admin_username:              ${{ secrets.BEACON_ADMIN_USERNAME }}
+      TF_VAR_beacon_admin_password:              ${{ secrets.BEACON_ADMIN_PASSWORD }}
+      TF_VAR_beacon_guest_username:              ${{ secrets.BEACON_GUEST_USERNAME }}
+      TF_VAR_beacon_guest_password:              ${{ secrets.BEACON_GUEST_PASSWORD }}
+      TF_VAR_azure_openai_api_key:               ${{ secrets.AZURE_OPENAI_API_KEY }}
+      TF_VAR_azure_openai_endpoint:              ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+      TF_VAR_azure_openai_api_version:           ${{ secrets.AZURE_OPENAI_API_VERSION }}
+      TF_VAR_azure_openai_chat_deployment_name:  ${{ secrets.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME }}
+      TF_VAR_openai_api_key:                     ${{ secrets.OPENAI_API_KEY }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region:     ${{ env.AWS_REGION }}
+
+      - name: Build layers
+        if: hashFiles('init.sh') != ''
+        run: bash ./init.sh
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -47,15 +76,15 @@ jobs:
             -input=false -upgrade \
             -backend-config=${{ env.TF_BACKEND_CONFIG }}
 
-      - name: Select/Create Workspace
+      - name: Select/Create Workspace (staging)
         run: |
-          terraform -chdir=${{ env.TF_WORKING_DIR }} workspace select ${{ env.TF_WORKSPACE }} \
-            || terraform -chdir=${{ env.TF_WORKING_DIR }} workspace new ${{ env.TF_WORKSPACE }}
+          terraform -chdir=${{ env.TF_WORKING_DIR }} workspace select ${{ env.TARGET_WORKSPACE }} \
+            || terraform -chdir=${{ env.TF_WORKING_DIR }} workspace new ${{ env.TARGET_WORKSPACE }}
 
       - name: Terraform Validate
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} validate
 
-      - name: Terraform Plan (no apply)
+      - name: Terraform Plan
         run: |
           terraform -chdir=${{ env.TF_WORKING_DIR }} plan -input=false -out=tfplan
           terraform -chdir=${{ env.TF_WORKING_DIR }} show -no-color tfplan > ${{ env.TF_WORKING_DIR }}/tfplan.txt
@@ -63,83 +92,51 @@ jobs:
       - name: Upload plan artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tfplan-staging
+          name: tfplan-staging-${{ github.run_id }}
           path: ${{ env.TF_WORKING_DIR }}/tfplan.txt
 
-      - name: Comment plan to PR (optional)
-        uses: thollander/actions-comment-pull-request@v2
-        with:
-          filePath: ${{ env.TF_WORKING_DIR }}/tfplan.txt
-          comment_includes_file: true
-          fail_on_error: false
-
-  deploy:
-    # Deploy only when PR is merged into release/** or hotfix/**
-    if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true
-    name: Build Image & Deploy (staging)
-    runs-on: ubuntu-latest
-    environment:
-      name: staging
-      url: ${{ vars.STAGING_BASE_URL }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Compute image coordinates
-        id: img
+      # —— 合并成功后：打预发布 tag（vX.Y.Z-rc.N） ——
+      - name: Compute prerelease tag (rc)
+        id: ver
+        shell: bash
         run: |
-          echo "REGISTRY=${{ steps.login-ecr.outputs.registry }}" >> $GITHUB_OUTPUT
-          echo "IMAGE=${{ env.ECR_REPOSITORY }}" >> $GITHUB_OUTPUT
-          echo "TAG=${GITHUB_SHA}" >> $GITHUB_OUTPUT
-          echo "URI=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${GITHUB_SHA}" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          git fetch --tags --force
+          LATEST="$(git describe --tags --abbrev=0 2>/dev/null || echo 'v0.0.0')"
+          # 依据 PR 标题粗略推断 bump：BREAKING/feat! -> major；feat -> minor；其余 -> patch
+          TITLE="${{ github.event.pull_request.title || '' }}"
+          if echo "$TITLE" | grep -qiE 'BREAKING CHANGE|feat!'; then BUMP=major;
+          elif echo "$TITLE" | grep -qiE '^feat(\(|: )'; then BUMP=minor;
+          else BUMP=patch; fi
+          BASE="${LATEST%%-*}"
+          IFS='.' read -r MA MI PA <<<"${BASE#v}"
+          case "$BUMP" in
+            major) MA=$((MA+1)); MI=0; PA=0;;
+            minor) MI=$((MI+1)); PA=0;;
+            patch) PA=$((PA+1));;
+          esac
+          BASE="v${MA}.${MI}.${PA}"
+          LAST_RC=$(git tag -l "${BASE}-rc.*" | sed -E 's/.*-rc\.([0-9]+)$/\1/' | sort -n | tail -1)
+          if [ -z "$LAST_RC" ]; then N=1; else N=$((LAST_RC+1)); fi
+          NEXT="${BASE}-rc.${N}"
+          echo "next=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "NEXT=$NEXT"
 
-      - name: Docker build
+      - name: Create & push tag
         run: |
-          docker build -t ${{ steps.img.outputs.IMAGE }}:${{ steps.img.outputs.TAG }} .
-
-      - name: Docker tag & push
-        run: |
-          docker tag ${{ steps.img.outputs.IMAGE }}:${{ steps.img.outputs.TAG }} ${{ steps.img.outputs.REGISTRY }}/${{ steps.img.outputs.IMAGE }}:${{ steps.img.outputs.TAG }}
-          docker push ${{ steps.img.outputs.REGISTRY }}/${{ steps.img.outputs.IMAGE }}:${{ steps.img.outputs.TAG }}
-
-      - name: Configure AWS Credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}  # 你的 OIDC 角色 ARN
-          aws-region: ${{ env.AWS_REGION }}
-          
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.9.5
-
-      - name: Terraform Init
-        run: |
-          terraform -chdir=${{ env.TF_WORKING_DIR }} init \
-            -input=false -upgrade \
-            -backend-config=${{ env.TF_BACKEND_CONFIG }}
-
-      - name: Select/Create Workspace
-        run: |
-          terraform -chdir=${{ env.TF_WORKING_DIR }} workspace select ${{ env.TF_WORKSPACE }} \
-            || terraform -chdir=${{ env.TF_WORKING_DIR }} workspace new ${{ env.TF_WORKSPACE }}
-
-      - name: Terraform Plan (with image vars)
-        run: |
-          terraform -chdir=${{ env.TF_WORKING_DIR }} plan \
-            -input=false -out=tfplan \
-            -var="image_uri=${{ steps.img.outputs.URI }}" \
-            -var="image_tag=${{ steps.img.outputs.TAG }}"
+          git config user.name  "${GITHUB_ACTOR}"
+          git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+          git tag -a "${{ steps.ver.outputs.next }}" -m "staging: ${GITHUB_SHA} via PR #${{ github.event.pull_request.number || '' }}"
+          git push origin "${{ steps.ver.outputs.next }}"
 
       - name: Terraform Apply
+        if: env.TF_APPLY_FLAG == 'true'
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} apply -input=false -auto-approve tfplan
+
+      - name: Terraform Destroy
+        if: env.TF_DESTROY_FLAG == 'true'
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} destroy -input=false -auto-approve
+
+      - name: Cleanup
+        if: always()
+        run: rm -f ${{ env.TF_WORKING_DIR }}/tfplan ${{ env.TF_WORKING_DIR }}/tfplan.txt ${{ env.TF_WORKING_DIR }}/tfplan-updated

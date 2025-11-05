@@ -49,10 +49,10 @@ jobs:
       - name: Verify destroy confirmation
         run: |
           if [ "${{ inputs.confirm_destroy }}" != "DESTROY" ]; then
-            echo "❌ 销毁确认失败！请输入 'DESTROY' 来确认删除所有资源"
+            echo "enter destroy"
             exit 1
           fi
-          echo "✅ 销毁确认通过"
+          echo "destroy confirmed"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -78,8 +78,8 @@ jobs:
 
       - name: List Resources
         run: |
-          echo "📋 当前资源列表："
-          terraform -chdir=${{ env.TF_WORKING_DIR }} state list || echo "无法获取资源列表"
+          echo "Current resources list："
+          terraform -chdir=${{ env.TF_WORKING_DIR }} state list || echo "can not get resources list"
 
       - name: Terraform Plan (Destroy)
         run: |
@@ -101,12 +101,12 @@ jobs:
 
       - name: Verify Destruction
         run: |
-          echo "🔍 验证资源是否已完全删除..."
+          echo "validate if resources are completed destory"
           RESOURCES=$(terraform -chdir=${{ env.TF_WORKING_DIR }} state list 2>/dev/null || echo "")
           if [ -n "$RESOURCES" ]; then
-            echo "⚠️ 仍有资源残留："
+            echo "Resources remain："
             echo "$RESOURCES"
-            echo "可能需要手动清理"
+            echo "Need manual cleanup"
           else
-            echo "✅ 所有资源已成功删除"
+            echo "All resources are deleted!!!"
           fi
