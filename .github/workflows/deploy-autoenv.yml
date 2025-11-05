@@ -63,7 +63,7 @@ jobs:
   call-dev:
     needs: decide
     if: ${{ needs.decide.outputs.ENV == 'dev' }}
-    uses: ./.github/workflows/deploy-autoenvdev.yml
+    uses: ./.github/workflows/deploy-autoenv-dev.yml
     with:
       apply: ${{ needs.decide.outputs.APPLY == 'true' }}
       destroy: ${{ needs.decide.outputs.DESTROY == 'true' }}
@@ -73,7 +73,7 @@ jobs:
 #   call-staging:
 #     needs: decide
 #     if: ${{ needs.decide.outputs.ENV == 'staging' }}
-#     uses: ./.github/workflows/deploy-autoenvstaging.yml
+#     uses: ./.github/workflows/deploy-autoenv-staging.yml
 #     with:
 #       apply: ${{ needs.decide.outputs.APPLY == 'true' }}
 #     secrets: inherit
@@ -81,7 +81,7 @@ jobs:
 #   call-prod:
 #     needs: decide
 #     if: ${{ needs.decide.outputs.ENV == 'prod' }}
-#     uses: ./.github/workflows/deploy-autoenvprod.yml
+#     uses: ./.github/workflows/deploy-autoenv-prod.yml
 #     with:
 #       apply: ${{ needs.decide.outputs.APPLY == 'true' }}
 #     secrets: inherit
