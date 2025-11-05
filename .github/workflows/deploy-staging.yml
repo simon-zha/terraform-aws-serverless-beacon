@@ -28,19 +28,21 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Resolve tag and release type
+      - name: Resolve tag and release type (from PR description)
         id: ver
         shell: bash
         run: |
           set -euo pipefail
           git fetch --tags --force
 
-          TITLE="${{ github.event.pull_request.title || '' }}"
-          # Optional user overrides in PR title:
-          #   tag: v1.2.3-rc.4  OR  tag: v1.2.3
-          #   release-type: prerelease  OR  release-type: stable
-          TAG_OVERRIDE="$(echo "$TITLE" | sed -nE 's/.*tag:[[:space:]]*(v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?).*/\1/ip' | head -1)"
-          TYPE_OVERRIDE="$(echo "$TITLE" | sed -nE 's/.*release-type:[[:space:]]*(prerelease|stable).*/\1/ip' | tr '[:upper:]' '[:lower:]' | head -1)"
+          # Read PR description
+          BODY="${{ github.event.pull_request.body || '' }}"
+
+          # Optional overrides in PR description (case-insensitive, one per line):
+          #   tag: v1.2.3-rc.4   or   tag: v1.2.3
+          #   release-type: prerelease   or   release-type: stable
+          TAG_OVERRIDE="$(printf '%s\n' "$BODY" | sed -nE 's/.*tag:[[:space:]]*(v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?).*/\1/ip' | head -1)"
+          TYPE_OVERRIDE="$(printf '%s\n' "$BODY" | sed -nE 's/.*release-type:[[:space:]]*(prerelease|stable).*/\1/ip' | tr '[:upper:]' '[:lower:]' | head -1)"
 
           if [ -n "$TAG_OVERRIDE" ]; then
             if git rev-parse -q --verify "refs/tags/$TAG_OVERRIDE" >/dev/null; then
@@ -48,10 +50,12 @@ jobs:
             fi
             TAG="$TAG_OVERRIDE"
           else
+            # Auto-generate next rc from latest stable vX.Y.Z
             LATEST="$(git tag --list 'v[0-9]*' | grep -v -- '-rc\.' | sort -V | tail -1)"
             [ -z "$LATEST" ] && LATEST="v0.0.0"
             BASE="${LATEST%%-*}"
             IFS='.' read -r MA MI PA <<<"${BASE#v}"
+            TITLE="${{ github.event.pull_request.title || '' }}"
             if echo "$TITLE" | grep -qiE 'BREAKING CHANGE|feat!'; then BUMP=major;
             elif echo "$TITLE" | grep -qiE '^feat(\(|: )'; then BUMP=minor; else BUMP=patch; fi
             case "$BUMP" in
