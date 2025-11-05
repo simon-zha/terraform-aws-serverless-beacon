@@ -1,4 +1,4 @@
-# .github/workflows/deploy-prod.yml
+# # .github/workflows/deploy-prod.yml
 # name: Deploy Production Environment
 
 # # Main branch only allow merge
@@ -20,10 +20,3 @@
 #     - name: Docker build
 #     - name: Docker push
 #     - name: Deploy to dev environment
-
-on:
-    push:
-        branches:
-            - main
-
-jobs:
