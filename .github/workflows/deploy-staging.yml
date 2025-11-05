@@ -97,7 +97,6 @@ jobs:
           name: tfplan-staging-${{ github.run_id }}
           path: ${{ env.TF_WORKING_DIR }}/tfplan.txt
 
-      # ========== 解析/确定版本号（优先使用你在 PR 标题里指定的 tag: vX.Y.Z[-rc.N]） ==========
       - name: Resolve tag (prefer user override)
         id: ver
         shell: bash
