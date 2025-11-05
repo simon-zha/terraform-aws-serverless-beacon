@@ -7,28 +7,6 @@ on:
       - 'release'
       - 'release/**'
     types: [ closed ]
-  workflow_dispatch:
-    inputs:
-      apply:
-        description: "Start terraform apply (true/false)"
-        required: false
-        default: "true"
-      aws_region:
-        description: "AWS Region (default: ap-southeast-2)"
-        required: false
-        default: "ap-southeast-2"
-      backend_config:
-        description: "Backend HCL file (default: backend-dev.hcl)"
-        required: false
-        default: "backend-dev.hcl"
-      workspace:
-        description: "Terraform workspace (default: staging)"
-        required: false
-        default: "staging"
-      trigger_destroy:
-        description: "Run terraform destroy after completion (true/false)"
-        required: false
-        default: "false"
 
 permissions:
   contents: write
@@ -40,33 +18,38 @@ concurrency:
 
 jobs:
   deploy:
-    name: Manual Terraform Deploy
+    if: >
+      github.event.pull_request.merged == true &&
+      (github.event.pull_request.base.ref == 'release' || startsWith(github.event.pull_request.base.ref, 'release/')) &&
+      github.event.pull_request.head.ref == 'develop'
     runs-on: ubuntu-latest
-    environment: staging
+    environment:
+      name: staging
+      url: ${{ vars.STAGING_BASE_URL }}
 
     env:
-      AWS_REGION: ${{ inputs.aws_region != '' && inputs.aws_region || vars.AWS_REGION || 'ap-southeast-2' }}
-      TF_WORKING_DIR: ${{ github.workspace }}/environments
-      TARGET_WORKSPACE: ${{ inputs.workspace != '' && inputs.workspace || 'staging' }}
-      TF_APPLY_FLAG: ${{ inputs.apply != '' && inputs.apply || 'true' }}
-      TF_DESTROY_FLAG: ${{ inputs.trigger_destroy != '' && inputs.trigger_destroy || 'false' }}
-      TF_BACKEND_CONFIG: ${{ inputs.backend_config != '' && inputs.backend_config || 'backend-dev.hcl' }}
-      TF_IN_AUTOMATION: true
-      TF_INPUT: false
+      AWS_REGION:        ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+      TF_WORKING_DIR:    ${{ github.workspace }}/environments
+      TARGET_WORKSPACE:  staging
+      TF_APPLY_FLAG:     true
+      TF_DESTROY_FLAG:   false
+      TF_BACKEND_CONFIG: backend-staging.hcl
+      TF_IN_AUTOMATION:  true
+      TF_INPUT:          false
 
-      TF_VAR_region: ${{ inputs.aws_region != '' && inputs.aws_region || vars.AWS_REGION || 'ap-southeast-2' }}
-      TF_VAR_beacon_admin_username: ${{ secrets.BEACON_ADMIN_USERNAME }}
-      TF_VAR_beacon_admin_password: ${{ secrets.BEACON_ADMIN_PASSWORD }}
-      TF_VAR_beacon_guest_username: ${{ secrets.BEACON_GUEST_USERNAME }}
-      TF_VAR_beacon_guest_password: ${{ secrets.BEACON_GUEST_PASSWORD }}
-      TF_VAR_azure_openai_api_key: ${{ secrets.AZURE_OPENAI_API_KEY }}
-      TF_VAR_azure_openai_endpoint: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
-      TF_VAR_azure_openai_api_version: ${{ secrets.AZURE_OPENAI_API_VERSION }}
-      TF_VAR_azure_openai_chat_deployment_name: ${{ secrets.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME }}
-      TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+      TF_VAR_region:                             ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+      TF_VAR_beacon_admin_username:              ${{ secrets.BEACON_ADMIN_USERNAME }}
+      TF_VAR_beacon_admin_password:              ${{ secrets.BEACON_ADMIN_PASSWORD }}
+      TF_VAR_beacon_guest_username:              ${{ secrets.BEACON_GUEST_USERNAME }}
+      TF_VAR_beacon_guest_password:              ${{ secrets.BEACON_GUEST_PASSWORD }}
+      TF_VAR_azure_openai_api_key:               ${{ secrets.AZURE_OPENAI_API_KEY }}
+      TF_VAR_azure_openai_endpoint:              ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+      TF_VAR_azure_openai_api_version:           ${{ secrets.AZURE_OPENAI_API_VERSION }}
+      TF_VAR_azure_openai_chat_deployment_name:  ${{ secrets.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME }}
+      TF_VAR_openai_api_key:                     ${{ secrets.OPENAI_API_KEY }}
 
     steps:
-      - name: Checkout Code
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -76,12 +59,16 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region:     ${{ env.AWS_REGION }}
+
+      - name: Build layers
+        if: hashFiles('init.sh') != ''
+        run: bash ./init.sh
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.9.4
+          terraform_version: 1.9.5
 
       - name: Terraform Init
         run: |
@@ -89,7 +76,7 @@ jobs:
             -input=false -upgrade \
             -backend-config=${{ env.TF_BACKEND_CONFIG }}
 
-      - name: Select/Create Workspace
+      - name: Select/Create Workspace (staging)
         run: |
           terraform -chdir=${{ env.TF_WORKING_DIR }} workspace select ${{ env.TARGET_WORKSPACE }} \
             || terraform -chdir=${{ env.TF_WORKING_DIR }} workspace new ${{ env.TARGET_WORKSPACE }}
@@ -98,26 +85,25 @@ jobs:
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} validate
 
       - name: Terraform Plan
-        id: plan
         run: |
           terraform -chdir=${{ env.TF_WORKING_DIR }} plan -input=false -out=tfplan
           terraform -chdir=${{ env.TF_WORKING_DIR }} show -no-color tfplan > ${{ env.TF_WORKING_DIR }}/tfplan.txt
 
-      - name: Upload Plan
+      - name: Upload plan artifact
         uses: actions/upload-artifact@v4
         with:
-          name: manual-terraform-plan-${{ github.run_id }}
+          name: tfplan-staging-${{ github.run_id }}
           path: ${{ env.TF_WORKING_DIR }}/tfplan.txt
 
-      # ==== 合并到 release 时：打预发布 tag ====
+      # —— 合并成功后：打预发布 tag（vX.Y.Z-rc.N） ——
       - name: Compute prerelease tag (rc)
-        if: github.event_name == 'pull_request' && github.event.pull_request.merged == true
         id: ver
         shell: bash
         run: |
           set -euo pipefail
           git fetch --tags --force
           LATEST="$(git describe --tags --abbrev=0 2>/dev/null || echo 'v0.0.0')"
+          # 依据 PR 标题粗略推断 bump：BREAKING/feat! -> major；feat -> minor；其余 -> patch
           TITLE="${{ github.event.pull_request.title || '' }}"
           if echo "$TITLE" | grep -qiE 'BREAKING CHANGE|feat!'; then BUMP=major;
           elif echo "$TITLE" | grep -qiE '^feat(\(|: )'; then BUMP=minor;
@@ -137,9 +123,8 @@ jobs:
           echo "NEXT=$NEXT"
 
       - name: Create & push tag
-        if: steps.ver.outputs.next != ''
         run: |
-          git config user.name "${GITHUB_ACTOR}"
+          git config user.name  "${GITHUB_ACTOR}"
           git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
           git tag -a "${{ steps.ver.outputs.next }}" -m "staging: ${GITHUB_SHA} via PR #${{ github.event.pull_request.number || '' }}"
           git push origin "${{ steps.ver.outputs.next }}"
@@ -152,6 +137,6 @@ jobs:
         if: env.TF_DESTROY_FLAG == 'true'
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} destroy -input=false -auto-approve
 
-      - name: Clean up plan files
+      - name: Cleanup
         if: always()
         run: rm -f ${{ env.TF_WORKING_DIR }}/tfplan ${{ env.TF_WORKING_DIR }}/tfplan.txt ${{ env.TF_WORKING_DIR }}/tfplan-updated
