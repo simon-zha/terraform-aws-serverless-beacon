@@ -1,22 +1,12 @@
 # # .github/workflows/deploy-prod.yml
-# name: Deploy Production Environment
+name: Deploy Production Environment
 
-# # Main branch only allow merge
-# on:
-#   push:
-#     branches:
-#       - main
-# jobs:
-#   terraform_deploy_staging:
-#     runs-on: ubuntu-latest
-#     environment: production
-#     steps:
-#     - name: Checkout Code
-#       uses: actions/checkout@v4
-#     # in progress
-#     - name: Configure AWS Credentials 
-#     - name: Setup Terraform
-#       uses: hashicorp/setup-terraform@v3
-#     - name: Docker build
-#     - name: Docker push
-#     - name: Deploy to dev environment
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+    tags-ignore:
+      - 'v*-rc.*'
+
+jobs:
