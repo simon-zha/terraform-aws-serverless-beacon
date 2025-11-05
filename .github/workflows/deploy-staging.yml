@@ -61,6 +61,13 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region:     ${{ env.AWS_REGION }}
 
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential autoconf automake pkg-config \
+            zlib1g-dev libcurl4-openssl-dev libbz2-dev liblzma-dev
+
       - name: Build layers
         if: hashFiles('init.sh') != ''
         run: bash ./init.sh
@@ -95,7 +102,6 @@ jobs:
           name: tfplan-staging-${{ github.run_id }}
           path: ${{ env.TF_WORKING_DIR }}/tfplan.txt
 
-      # —— 合并成功后：打预发布 tag（vX.Y.Z-rc.N） ——
       - name: Compute prerelease tag (rc)
         id: ver
         shell: bash
@@ -103,7 +109,6 @@ jobs:
           set -euo pipefail
           git fetch --tags --force
           LATEST="$(git describe --tags --abbrev=0 2>/dev/null || echo 'v0.0.0')"
-          # 依据 PR 标题粗略推断 bump：BREAKING/feat! -> major；feat -> minor；其余 -> patch
           TITLE="${{ github.event.pull_request.title || '' }}"
           if echo "$TITLE" | grep -qiE 'BREAKING CHANGE|feat!'; then BUMP=major;
           elif echo "$TITLE" | grep -qiE '^feat(\(|: )'; then BUMP=minor;
