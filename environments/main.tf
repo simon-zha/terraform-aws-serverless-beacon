@@ -7,7 +7,7 @@ terraform {
 variable "region" {
   type        = string
   description = "AWS region"
-  default     = "ap-southease-2"
+  default     = "ap-southeast-2"
 }
 
 variable "additional_tags" {
