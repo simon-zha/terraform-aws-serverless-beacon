@@ -1,4 +1,4 @@
-FROM --platform=x86_64 public.ecr.aws/sam/build-python3.12:latest-x86_64 as builder
+FROM --platform=x86_64 public.ecr.aws/sam/build-python3.12:latest-x86_64
 
 RUN dnf update -y \
 && dnf install -y git tar make openssl-devel libcurl-devel wget bzip2-devel xz-devel libffi-devel zlib-devel autoconf intltool \
