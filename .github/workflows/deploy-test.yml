@@ -97,8 +97,28 @@ jobs:
 
       - name: Select Terraform Workspace
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} workspace select ${{ env.TARGET_WORKSPACE }} || terraform -chdir=${{ env.TF_WORKING_DIR }} workspace new ${{ env.TARGET_WORKSPACE }}
+      - name: Ensure ECR Repositories Exist
+        if: env.TF_APPLY_FLAG == 'true'
+        run: |
+          aws ecr create-repository --repository-name sbeacon-analytics-lambda-containers \
+            --region ${{ env.AWS_REGION }} \
+            --image-scanning-configuration scanOnPush=true \
+            --image-tag-mutability MUTABLE || echo "Repo 'sbeacon-analytics-lambda-containers' already exists."
+    
+          aws ecr create-repository --repository-name sbeacon-askbeacon-lambda-containers \
+            --region ${{ env.AWS_REGION }} \
+            --image-scanning-configuration scanOnPush=true \
+            --image-tag-mutability MUTABLE || echo "Repo 'sbeacon-askbeacon-lambda-containers' already exists."
       - name: Import ECR Repos into Terraform State
         run: |
+            set -euo pipefail
+            terraform -chdir=${{ env.TF_WORKING_DIR }} import \
+            'module.serverless_beacon.module.docker_image_analytics_lambda.aws_ecr_repository.this[0]' \
+            sbeacon-analytics-lambda-containers || echo "Analytics ECR repo not found or already imported."
+
+            terraform -chdir=${{ env.TF_WORKING_DIR }} import \
+            'module.serverless_beacon.module.docker_image_askbeacon_lambda.aws_ecr_repository.this[0]' \
+            sbeacon-askbeacon-lambda-containers || echo "AskBeacon ECR repo not found or already imported."
       - name: Terraform Validate
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} validate
           terraform -chdir=${{ env.TF_WORKING_DIR }} import \
@@ -120,18 +140,7 @@ jobs:
           name: manual-terraform-plan-${{ github.run_id }}
           path: ${{ env.TF_WORKING_DIR }}/tfplan.txt
 
-      - name: Ensure ECR Repositories Exist
-        if: env.TF_APPLY_FLAG == 'true'
-        run: |
-          aws ecr create-repository --repository-name sbeacon-analytics-lambda-containers \
-            --region ${{ env.AWS_REGION }} \
-            --image-scanning-configuration scanOnPush=true \
-            --image-tag-mutability MUTABLE || echo "Repo 'sbeacon-analytics-lambda-containers' already exists."
-    
-          aws ecr create-repository --repository-name sbeacon-askbeacon-lambda-containers \
-            --region ${{ env.AWS_REGION }} \
-            --image-scanning-configuration scanOnPush=true \
-            --image-tag-mutability MUTABLE || echo "Repo 'sbeacon-askbeacon-lambda-containers' already exists."
+
       - name: Log in to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
