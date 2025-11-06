@@ -97,10 +97,17 @@ jobs:
 
       - name: Select Terraform Workspace
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} workspace select ${{ env.TARGET_WORKSPACE }} || terraform -chdir=${{ env.TF_WORKING_DIR }} workspace new ${{ env.TARGET_WORKSPACE }}
-
+      - name: Import ECR Repos into Terraform State
+        run: |
       - name: Terraform Validate
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} validate
-
+          terraform -chdir=${{ env.TF_WORKING_DIR }} import \
+            'module.serverless_beacon.module.docker_image_analytics_lambda.aws_ecr_repository.this[0]' \
+            sbeacon-analytics-lambda-containers || echo "Analytics ECR repo not found or already in state. Will create if needed."
+            
+          terraform -chdir=${{ env.TF_WORKING_DIR }} import \
+            'module.serverless_beacon.module.docker_image_askbeacon_lambda.aws_ecr_repository.this[0]' \
+            sbeacon-askbeacon-lambda-containers || echo "AskBeacon ECR repo not found or already in state. Will create if needed."
       - name: Terraform Plan
         id: plan
         run: |
