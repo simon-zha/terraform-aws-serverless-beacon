@@ -1,12 +1,10 @@
 # .github/workflows/staging-release.yml
 name: Staging Tag & GitHub Release
 
-<<<<<<< HEAD
 on:
   pull_request:
     branches: ['release', 'release/**']
     types: [closed]
-=======
 # Staging and Hotfix branch only allow merge
 # on:
 #   push:
@@ -48,7 +46,6 @@ on:
 #     #        with:
 #     #          name: post-deploy-info-${{ github.run_id }}
 #     #          path: post_deploy_info.txt
->>>>>>> origin/dev_HealthCheckFunc
 
 permissions:
   contents: write
@@ -150,3 +147,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
+
