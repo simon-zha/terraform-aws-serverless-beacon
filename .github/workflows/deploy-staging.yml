@@ -21,8 +21,8 @@ jobs:
     if: github.event.pull_request.merged == true
     uses: ./.github/workflows/deploy-autoenv-dev.yml
     with:
-      workspace: 'staging'                 # switch from dev to staging
-      backend_config: 'backend-staging.hcl'# picked up under environments/
+      workspace: 'staging'
+      backend_config: 'backend-staging.hcl'
       aws_region: 'ap-southeast-2'
       apply: true
       trigger_destroy: false
@@ -119,6 +119,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
+
 
 
 
