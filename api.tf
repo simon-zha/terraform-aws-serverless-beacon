@@ -403,5 +403,5 @@ resource "aws_api_gateway_deployment" "BeaconApi" {
 resource "aws_api_gateway_stage" "BeaconApi" {
   deployment_id = aws_api_gateway_deployment.BeaconApi.id
   rest_api_id   = aws_api_gateway_rest_api.BeaconApi.id
-  stage_name    = local.environment
+  stage_name    = terraform.workspace
 }
