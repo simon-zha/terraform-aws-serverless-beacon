@@ -3,49 +3,8 @@ name: Staging Tag & GitHub Release
 
 on:
   pull_request:
-    branches: ['release', 'release/**']
+    branches: ['main']
     types: [closed]
-# Staging and Hotfix branch only allow merge
-# on:
-#   push:
-#     branches:
-#       - 'release/**'
-#       - 'hotfix/**'
-# jobs:
-#   terraform_deploy_staging:
-#     runs-on: ubuntu-latest
-#     environment: staging
-#     steps:
-#     - name: Checkout Code
-#       uses: actions/checkout@v4
-#     # in progress
-#     - name: Configure AWS Credentials 
-#     - name: Setup Terraform
-#       uses: hashicorp/setup-terraform@v3
-#     - name: Docker build
-#     - name: Docker push
-#     - name: Deploy to dev environment
-#
-#     # Example: capture and upload api_url after successful terraform apply
-#     # Uncomment and adapt below to enable automatic post-deploy artifact upload
-#     #      - name: Capture API URL (post-deploy)
-#     #        if: env.TF_APPLY_FLAG == 'true'
-#     #        run: |
-#     #          set -euo pipefail
-#     #          echo "Retrieving api_url from terraform outputs..."
-#     #          if terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw api_url > post_deploy_info.txt 2>/dev/null; then
-#     #            echo "Captured api_url"
-#     #          else
-#     #            echo "Falling back to json output parsing"
-#     #            terraform -chdir=${{ env.TF_WORKING_DIR }} output -json api_url | python -c "import sys, json; print(json.load(sys.stdin))" > post_deploy_info.txt
-#     #          fi
-#     #
-#     #      - name: Upload post-deploy info
-#     #        if: env.TF_APPLY_FLAG == 'true'
-#     #        uses: actions/upload-artifact@v4
-#     #        with:
-#     #          name: post-deploy-info-${{ github.run_id }}
-#     #          path: post_deploy_info.txt
 
 permissions:
   contents: write
@@ -54,12 +13,12 @@ concurrency:
   group: staging-release
   cancel-in-progress: true
 
+
 jobs:
   tag_and_release:
     if: >
       github.event.pull_request.merged == true &&
-      (github.event.pull_request.base.ref == 'release' || startsWith(github.event.pull_request.base.ref, 'release/')) &&
-      github.event.pull_request.head.ref == 'develop'
+      github.event.pull_request.base.ref == 'main'
     runs-on: ubuntu-latest
 
     steps:
@@ -147,4 +106,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
+
 
