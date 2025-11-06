@@ -1,0 +1,26 @@
+name: Emulate Deploy Dev Environment 
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_url:
+        description: 'Health check URL to upload as post-deploy info'
+        required: false
+        default: 'https://example.com'
+
+jobs:
+  emulate_deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create post_deploy_info.txt
+        run: |
+          echo "${{ github.event.inputs.test_url }}" > post_deploy_info.txt
+
+      - name: Upload post-deploy info
+        uses: actions/upload-artifact@v4
+        with:
+          name: post-deploy-info-${{ github.run_id }}
+          path: post_deploy_info.txt
