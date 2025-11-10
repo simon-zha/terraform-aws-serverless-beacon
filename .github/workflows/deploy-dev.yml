@@ -65,7 +65,6 @@ jobs:
       TF_VAR_azure_openai_chat_deployment_name: ${{ secrets.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME }}
       TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
       TF_PLUGIN_CACHE_DIR: ~/.terraform.d/plugin-cache
-      TF_VAR_manage_ecr: true
 
     steps:
       - name: Checkout
@@ -99,8 +98,40 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-
-      # ---------- Docker 构建与缓存优化 ----------
+      - name: create ECR repo
+        run: |
+          set -euo pipefail
+          REGION="${{ env.AWS_REGION }}"
+          for repo in sbeacon-analytics-lambda-containers sbeacon-askbeacon-lambda-containers; do
+            if ! aws ecr describe-repositories --repository-names "$repo" --region "$REGION" >/dev/null 2>&1; then
+              echo "Creating ECR repo: $repo"
+              aws ecr create-repository \
+                --repository-name "$repo" \
+                --region "$REGION" \
+                --image-scanning-configuration scanOnPush=true \
+                --image-tag-mutability MUTABLE >/dev/null
+              aws ecr put-lifecycle-policy \
+                --repository-name "$repo" \
+                --lifecycle-policy-text '{
+                  "rules":[
+                    {
+                      "rulePriority":1,
+                      "description":"Expire untagged after 7 days",
+                      "selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":7},
+                      "action":{"type":"expire"}
+                    },
+                    {
+                      "rulePriority":10,
+                      "description":"Keep last 15 dev-/gh-/v tagged",
+                      "selection":{"tagStatus":"tagged","tagPrefixList":["dev-","gh-","v"],"countType":"imageCountMoreThan","countNumber":15},
+                      "action":{"type":"expire"}
+                    }
+                  ]
+                }' >/dev/null || true
+            else
+              echo "ECR repo exists: $repo"
+            fi
+          done
       - name: Docker Buildx
         uses: docker/setup-buildx-action@v3
 
