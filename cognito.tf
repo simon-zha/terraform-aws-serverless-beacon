@@ -2,7 +2,7 @@
 # Pool and client
 # 
 resource "aws_cognito_user_pool" "BeaconUserPool" {
-  name = "sbeacon-users"
+  name = "sbeacon-users${local.environment_suffix}"
 
   admin_create_user_config {
     allow_admin_create_user_only = true
@@ -39,7 +39,7 @@ resource "aws_cognito_user_pool" "BeaconUserPool" {
 }
 
 resource "aws_cognito_user_pool_client" "BeaconUserPool-client" {
-  name = "sbeacon-users-client"
+  name = "sbeacon-users-client${local.environment_suffix}"
 
   user_pool_id = aws_cognito_user_pool.BeaconUserPool.id
 
@@ -54,7 +54,7 @@ resource "aws_cognito_user_pool_client" "BeaconUserPool-client" {
 # groups
 # 
 resource "aws_cognito_user_group" "admin-group" {
-  name         = "admin-group"
+  name         = "admin-group${local.environment_suffix}"
   user_pool_id = aws_cognito_user_pool.BeaconUserPool.id
   description  = "Group of users who can has admin privileges"
   role_arn     = aws_iam_role.admin-group-role.arn
@@ -98,7 +98,7 @@ data "aws_iam_policy_document" "admin-group-assume-role-policy" {
 }
 
 resource "aws_iam_role" "admin-group-role" {
-  name               = "admin-group-role"
+  name               = "admin-group-role${local.environment_suffix}"
   assume_role_policy = data.aws_iam_policy_document.admin-group-assume-role-policy.json
 }
 
@@ -114,7 +114,7 @@ data "aws_iam_policy_document" "admin-group-role-policy" {
 }
 
 resource "aws_iam_policy" "admin-group-role-policy" {
-  name        = "admin-group-role-policy"
+  name        = "admin-group-role-policy${local.environment_suffix}"
   description = "admin group permissions"
   policy      = data.aws_iam_policy_document.admin-group-role-policy.json
 
@@ -126,19 +126,19 @@ resource "aws_iam_role_policy_attachment" "admin-group-role-policy-attachment" {
 }
 
 resource "aws_cognito_user_group" "record-access" {
-  name         = "record-access-user-group"
+  name         = "record-access-user-group${local.environment_suffix}"
   user_pool_id = aws_cognito_user_pool.BeaconUserPool.id
   description  = "Group of users who can access 'record' granularity"
 }
 
 resource "aws_cognito_user_group" "count-access" {
-  name         = "count-access-user-group"
+  name         = "count-access-user-group${local.environment_suffix}"
   user_pool_id = aws_cognito_user_pool.BeaconUserPool.id
   description  = "Group of users who can access 'count' granularity"
 }
 
 resource "aws_cognito_user_group" "boolean-access" {
-  name         = "boolean-access-user-group"
+  name         = "boolean-access-user-group${local.environment_suffix}"
   user_pool_id = aws_cognito_user_pool.BeaconUserPool.id
   description  = "Group of users who can access 'boolean' granularity"
 }
@@ -252,7 +252,7 @@ resource "aws_cognito_user_in_group" "demo-boolean-access" {
 # authorizers
 # 
 resource "aws_api_gateway_authorizer" "BeaconUserPool-authorizer" {
-  name          = "UserPoolAuthorizer-sbeacon"
+  name          = "UserPoolAuthorizer-sbeacon${local.environment_suffix}"
   type          = "COGNITO_USER_POOLS"
   rest_api_id   = aws_api_gateway_rest_api.BeaconApi.id
   provider_arns = [aws_cognito_user_pool.BeaconUserPool.arn]
