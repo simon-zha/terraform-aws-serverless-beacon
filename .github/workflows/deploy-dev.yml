@@ -65,6 +65,7 @@ jobs:
       TF_VAR_azure_openai_chat_deployment_name: ${{ secrets.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME }}
       TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
       TF_PLUGIN_CACHE_DIR: ~/.terraform.d/plugin-cache
+      TF_VAR_manage_ecr: true
 
     steps:
       - name: Checkout
