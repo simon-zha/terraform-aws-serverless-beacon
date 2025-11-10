@@ -1,5 +1,5 @@
 # .github/workflows/prod-release.yml
-name: Production Deploy 
+name: deploy-prod
 
 on:
   push:
@@ -116,3 +116,4 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
