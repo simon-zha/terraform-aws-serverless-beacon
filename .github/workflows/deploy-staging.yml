@@ -1,5 +1,5 @@
 # .github/workflows/staging-release.yml
-name: Staging Tag & GitHub Release
+name: deploy-staging
 
 on:
   pull_request:
@@ -119,6 +119,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
+
 
 
 
