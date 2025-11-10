@@ -3,7 +3,7 @@ name: Staging Tag & GitHub Release
 
 on:
   pull_request:
-    branches: ['main']
+    branches: ['release']
     types: [closed]
 
 permissions:
@@ -119,5 +119,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
+
 
 
