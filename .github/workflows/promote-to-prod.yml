@@ -89,8 +89,9 @@ jobs:
             echo "Retagged $repo:$RC -> $STABLE"
           }
 
-          retag "sbeacon-analytics-lambda-containers"
-          retag "sbeacon-askbeacon-lambda-containers"
+          WORKSPACE="prod"
+          retag "sbeacon-${WORKSPACE}-analytics-lambda-containers"
+          retag "sbeacon-${WORKSPACE}-askbeacon-lambda-containers"
 
       - name: Create stable Git tag pointing to RC commit
         run: |
