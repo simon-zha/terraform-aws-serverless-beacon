@@ -23,8 +23,7 @@ concurrency:
 
 jobs:
   production:
-    runs-on: ubuntu-latest
-    uses: ./.github/workflows/deploy-autoenv-prod.yml
+    uses: ./.github/workflows/deploy-autoenv.yml
     with:
       workspace: 'production'
       backend_config: 'backend-prod.hcl'
@@ -116,4 +115,5 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 
