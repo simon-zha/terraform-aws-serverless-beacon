@@ -97,7 +97,7 @@ locals {
 module "lambda-submitDataset" {
   source = "terraform-aws-modules/lambda/aws"
 
-  function_name       = "submitDataset"
+  function_name       = "submitDataset${local.environment_suffix}"
   description         = "Creates or updates a dataset and triggers summariseVcf."
   handler             = "lambda_function.lambda_handler"
   runtime             = "python3.12"
@@ -138,7 +138,7 @@ module "lambda-submitDataset" {
 module "lambda-getInfo" {
   source = "terraform-aws-modules/lambda/aws"
 
-  function_name      = "getInfo"
+  function_name      = "getInfo${local.environment_suffix}"
   description        = "Returns basic information about the beacon and the datasets."
   handler            = "lambda_function.lambda_handler"
   runtime            = "python3.12"
@@ -167,7 +167,7 @@ module "lambda-getInfo" {
 module "lambda-getConfiguration" {
   source = "terraform-aws-modules/lambda/aws"
 
-  function_name      = "getConfiguration"
+  function_name      = "getConfiguration${local.environment_suffix}"
   description        = "Get the beacon configuration."
   runtime            = "python3.12"
   handler            = "lambda_function.lambda_handler"
@@ -197,7 +197,7 @@ module "lambda-getConfiguration" {
 module "lambda-getMap" {
   source = "terraform-aws-modules/lambda/aws"
 
-  function_name      = "getMap"
+  function_name      = "getMap${local.environment_suffix}"
   description        = "Get the beacon map."
   runtime            = "python3.12"
   handler            = "lambda_function.lambda_handler"
@@ -227,7 +227,7 @@ module "lambda-getMap" {
 module "lambda-getEntryTypes" {
   source = "terraform-aws-modules/lambda/aws"
 
-  function_name      = "getEntryTypes"
+  function_name      = "getEntryTypes${local.environment_suffix}"
   description        = "Get the beacon map."
   runtime            = "python3.12"
   handler            = "lambda_function.lambda_handler"
@@ -257,7 +257,7 @@ module "lambda-getEntryTypes" {
 module "lambda-getFilteringTerms" {
   source = "terraform-aws-modules/lambda/aws"
 
-  function_name       = "getFilteringTerms"
+  function_name       = "getFilteringTerms${local.environment_suffix}"
   description         = "Get the beacon map."
   runtime             = "python3.12"
   handler             = "lambda_function.lambda_handler"
@@ -291,7 +291,7 @@ module "lambda-getFilteringTerms" {
 module "lambda-getAnalyses" {
   source = "terraform-aws-modules/lambda/aws"
 
-  function_name       = "getAnalyses"
+  function_name       = "getAnalyses${local.environment_suffix}"
   description         = "Get the beacon map."
   runtime             = "python3.12"
   handler             = "lambda_function.lambda_handler"
@@ -330,7 +330,7 @@ module "lambda-getAnalyses" {
 module "lambda-getGenomicVariants" {
   source = "terraform-aws-modules/lambda/aws"
 
-  function_name       = "getGenomicVariants"
+  function_name       = "getGenomicVariants${local.environment_suffix}"
   description         = "Get the variants."
   runtime             = "python3.12"
   handler             = "lambda_function.lambda_handler"
@@ -369,7 +369,7 @@ module "lambda-getGenomicVariants" {
 module "lambda-getIndividuals" {
   source = "terraform-aws-modules/lambda/aws"
 
-  function_name       = "getIndividuals"
+  function_name       = "getIndividuals${local.environment_suffix}"
   description         = "Get the individuals."
   runtime             = "python3.12"
   handler             = "lambda_function.lambda_handler"
@@ -408,7 +408,7 @@ module "lambda-getIndividuals" {
 module "lambda-getBiosamples" {
   source = "terraform-aws-modules/lambda/aws"
 
-  function_name       = "getBiosamples"
+  function_name       = "getBiosamples${local.environment_suffix}"
   description         = "Get the biosamples."
   runtime             = "python3.12"
   handler             = "lambda_function.lambda_handler"
@@ -447,7 +447,7 @@ module "lambda-getBiosamples" {
 module "lambda-getDatasets" {
   source = "terraform-aws-modules/lambda/aws"
 
-  function_name       = "getDatasets"
+  function_name       = "getDatasets${local.environment_suffix}"
   description         = "Get the datasets."
   runtime             = "python3.12"
   handler             = "lambda_function.lambda_handler"
@@ -486,7 +486,7 @@ module "lambda-getDatasets" {
 module "lambda-getCohorts" {
   source = "terraform-aws-modules/lambda/aws"
 
-  function_name       = "getCohorts"
+  function_name       = "getCohorts${local.environment_suffix}"
   description         = "Get the cohorts."
   runtime             = "python3.12"
   handler             = "lambda_function.lambda_handler"
@@ -524,7 +524,7 @@ module "lambda-getCohorts" {
 module "lambda-getRuns" {
   source = "terraform-aws-modules/lambda/aws"
 
-  function_name       = "getRuns"
+  function_name       = "getRuns${local.environment_suffix}"
   description         = "Get the runs."
   runtime             = "python3.12"
   handler             = "lambda_function.lambda_handler"
@@ -563,7 +563,7 @@ module "lambda-getRuns" {
 module "lambda-splitQuery" {
   source = "terraform-aws-modules/lambda/aws"
 
-  function_name      = "splitQuery"
+  function_name      = "splitQuery${local.environment_suffix}"
   description        = "Splits a dataset into smaller slices of VCFs and invokes performQuery on each."
   handler            = "lambda_function.lambda_handler"
   runtime            = "python3.12"
@@ -591,7 +591,7 @@ module "lambda-splitQuery" {
 module "lambda-performQuery" {
   source = "terraform-aws-modules/lambda/aws"
 
-  function_name          = "performQuery"
+  function_name          = "performQuery${local.environment_suffix}"
   description            = "Queries a slice of a vcf for a specified variant."
   handler                = "lambda_function.lambda_handler"
   runtime                = "python3.12"
@@ -622,7 +622,7 @@ module "lambda-performQuery" {
 module "lambda-indexer" {
   source = "terraform-aws-modules/lambda/aws"
 
-  function_name       = "indexer"
+  function_name       = "indexer${local.environment_suffix}"
   description         = "Run the indexing tasks."
   runtime             = "python3.12"
   handler             = "lambda_function.lambda_handler"
@@ -659,7 +659,7 @@ module "lambda-indexer" {
 module "lambda-admin" {
   source = "terraform-aws-modules/lambda/aws"
 
-  function_name       = "admin"
+  function_name       = "admin${local.environment_suffix}"
   description         = "Run the admin tasks."
   runtime             = "python3.12"
   handler             = "lambda_function.lambda_handler"
@@ -691,7 +691,7 @@ module "lambda-admin" {
 module "lambda-analytics" {
   source = "terraform-aws-modules/lambda/aws"
 
-  function_name       = "analytics"
+  function_name       = "analytics${local.environment_suffix}"
   description         = "Run the analytics tasks."
   create_package      = false
   image_uri           = module.docker_image_analytics_lambda.image_uri
@@ -726,7 +726,7 @@ module "lambda-analytics" {
 module "lambda-askbeacon" {
   source = "terraform-aws-modules/lambda/aws"
 
-  function_name          = "askbeacon"
+  function_name          = "askbeacon${local.environment_suffix}"
   description            = "Run the llm tasks."
   create_package         = false
   image_uri              = module.docker_image_askbeacon_lambda.image_uri
