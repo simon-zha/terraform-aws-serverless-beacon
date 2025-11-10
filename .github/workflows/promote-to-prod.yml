@@ -1,0 +1,112 @@
+# .github/workflows/promote-to-prod.yml
+#Upgrade vX.Y.Z-rc.N to stable version vX.Y.Z, retag the ECR image from the same digest to stable version, and create a GitHub Release.
+name: Promote RC to Stable & Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      rc_tag:
+        description: 'RC tag to promote (e.g., v1.4.0-rc.3)'
+        required: true
+        type: string
+      stable_tag:
+        description: 'Stable tag (defaults to rc base, e.g., v1.4.0)'
+        required: false
+        type: string
+
+permissions:
+  contents: write   
+  id-token: write   
+  pull-requests: read
+
+concurrency:
+  group: promote-to-prod
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tags
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          RC="${{ inputs.rc_tag }}"
+          if ! echo "$RC" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$'; then
+            echo "::error::rc_tag must look like vX.Y.Z-rc.N"; exit 1
+          fi
+
+          BASE="${RC%-rc.*}"
+          STABLE="${{ inputs.stable_tag || '' }}"
+          if [ -z "$STABLE" ]; then STABLE="$BASE"; fi
+
+          git fetch --tags --force
+          SHA="$(git rev-list -n 1 "$RC")" || { echo "::error::RC tag not found in git."; exit 1; }
+
+          if git rev-parse -q --verify "refs/tags/$STABLE" >/dev/null; then
+            echo "::error::Stable tag '$STABLE' already exists."; exit 1
+          fi
+
+          echo "rc=$RC" >> "$GITHUB_OUTPUT"
+          echo "stable=$STABLE" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+
+      - name: Retag ECR images to stable (no rebuild)
+        shell: bash
+        run: |
+          set -euo pipefail
+          RC="${{ steps.ver.outputs.rc }}"
+          STABLE="${{ steps.ver.outputs.stable }}"
+          REGION="${{ vars.AWS_REGION || 'ap-southeast-2' }}"
+
+          retag() {
+            local repo="$1"
+            local manifest
+            manifest="$(aws ecr batch-get-image \
+              --repository-name "$repo" \
+              --image-ids imageTag="$RC" \
+              --query 'images[0].imageManifest' --output text)"
+            if [ -z "$manifest" ] || [ "$manifest" = "None" ]; then
+              echo "::error::Image for $repo:$RC not found."; exit 1
+            fi
+            aws ecr put-image \
+              --repository-name "$repo" \
+              --image-tag "$STABLE" \
+              --image-manifest "$manifest" >/dev/null
+            echo "Retagged $repo:$RC -> $STABLE"
+          }
+
+          retag "sbeacon-analytics-lambda-containers"
+          retag "sbeacon-askbeacon-lambda-containers"
+
+      - name: Create stable Git tag pointing to RC commit
+        run: |
+          git config user.name  "${GITHUB_ACTOR}"
+          git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+          git tag -a "${{ steps.ver.outputs.stable }}" "${{ steps.ver.outputs.sha }}" \
+            -m "Promote ${{ steps.ver.outputs.rc }} to ${{ steps.ver.outputs.stable }}"
+          git push origin "${{ steps.ver.outputs.stable }}"
+
+      - name: Create GitHub Release (stable)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name:  ${{ steps.ver.outputs.stable }}
+          name:      ${{ steps.ver.outputs.stable }}
+          prerelease: false
+          make_latest: true
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
