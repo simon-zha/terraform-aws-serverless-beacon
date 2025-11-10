@@ -20,7 +20,7 @@ module "docker_image_analytics_lambda" {
   source = "terraform-aws-modules/lambda/aws//modules/docker-build"
 
   create_ecr_repo = true
-  ecr_repo        = "sbeacon-analytics-lambda-containers"
+  ecr_repo        = "${local.environment_prefix}-analytics-lambda-containers"
   ecr_repo_lifecycle_policy = jsonencode({
     "rules" : [
       {
@@ -57,7 +57,7 @@ module "docker_image_askbeacon_lambda" {
   source = "terraform-aws-modules/lambda/aws//modules/docker-build"
 
   create_ecr_repo = true
-  ecr_repo        = "sbeacon-askbeacon-lambda-containers"
+  ecr_repo        = "${local.environment_prefix}-askbeacon-lambda-containers"
   ecr_repo_lifecycle_policy = jsonencode({
     "rules" : [
       {
