@@ -141,7 +141,7 @@ module "serverless_beacon" {
   metadata-bucket-prefix      = "sbeacon-${local.environment}-metadata-"
   lambda-layers-bucket-prefix = "sbeacon-${local.environment}-lambda-layers-"
 
-  beacon-environment = local.environment
+  beacon_environment = local.environment
   beacon-id          = coalesce(var.beacon_id, "au.csiro.serverless-beacon-${local.environment}")
   beacon-name        = coalesce(var.beacon_name, "CSIRO Serverless Beacon (${local.selected_defaults.name_suffix})")
   beacon-description = coalesce(var.beacon_description, local.selected_defaults.beacon_description)
