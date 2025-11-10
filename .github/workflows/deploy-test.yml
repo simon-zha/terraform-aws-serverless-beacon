@@ -1,5 +1,5 @@
 
-name: Development Env Deployment
+name: deploy-dev
 
 on:
   workflow_dispatch:
