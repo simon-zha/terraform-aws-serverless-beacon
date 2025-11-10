@@ -1,119 +1,160 @@
-# .github/workflows/prod-release.yml
-name: deploy-prod
-
+# .github/workflows/deploy-prod.yml
+name: deploy_prod
 on:
   push:
-    branches: ['main']
+    tags:
+      - 'v*.*.*'     
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Override stable tag (e.g., v1.2.3)'
+        description: 'Stable tag to deploy in the prod environment.'
         required: false
         type: string
 
 permissions:
-  contents: write
+  contents: read
   id-token: write
-  issues: write
-  pull-requests: write
 
 concurrency:
   group: production-deploy
   cancel-in-progress: true
 
 jobs:
-  production:
-    uses: ./.github/workflows/deploy-autoenv.yml
-    with:
-      workspace: 'production'
-      backend_config: 'backend-prod.hcl'
-      aws_region: 'ap-southeast-2'
-      apply: true
-      trigger_destroy: false
-    secrets: inherit
-
-  tag_and_release:
-    needs: production
+  deploy:
     runs-on: ubuntu-latest
+    environment: prod  
+
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+      TF_WORKING_DIR: ${{ github.workspace }}/environments
+      TARGET_WORKSPACE: 'prod'
+      TF_BACKEND_CONFIG: 'backend-prod.hcl'
+      TF_IN_AUTOMATION: true
+      TF_INPUT: false
+      TF_VAR_region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+      TF_VAR_beacon_admin_username: ${{ secrets.BEACON_ADMIN_USERNAME }}
+      TF_VAR_beacon_admin_password: ${{ secrets.BEACON_ADMIN_PASSWORD }}
+      TF_VAR_beacon_guest_username: ${{ secrets.BEACON_GUEST_USERNAME }}
+      TF_VAR_beacon_guest_password: ${{ secrets.BEACON_GUEST_PASSWORD }}
+      TF_VAR_azure_openai_api_key: ${{ secrets.AZURE_OPENAI_API_KEY }}
+      TF_VAR_azure_openai_endpoint: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+      TF_VAR_azure_openai_api_version: ${{ secrets.AZURE_OPENAI_API_VERSION }}
+      TF_VAR_azure_openai_chat_deployment_name: ${{ secrets.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME }}
+      TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: true
 
-      - name: Resolve stable tag (promote from rc or bump patch)
+      - name: Resolve stable tag
         id: ver
         shell: bash
         run: |
           set -euo pipefail
-          git fetch --tags --force
-
-          INPUT_TAG="${{ github.event.inputs.tag || '' }}"
-          BODY="$(git log -1 --pretty=%B || true)"
-          MSG_TAG="$(printf '%s\n' "$BODY" | sed -nE 's/.*tag:[[:space:]]*(v[0-9]+\.[0-9]+\.[0-9]+).*/\1/ip' | head -1)"
-
-          if [ -n "$INPUT_TAG" ]; then
-            TAG_OVERRIDE="$INPUT_TAG"
-          else
-            TAG_OVERRIDE="$MSG_TAG"
+          TAG="${{ inputs.tag || '' }}"
+          if [ -z "$TAG" ]; then
+            TAG="${GITHUB_REF_NAME:-}"
           fi
-
-          if [ -n "$TAG_OVERRIDE" ]; then
-            if echo "$TAG_OVERRIDE" | grep -q -- '-rc\.'; then
-              echo "::error::Production release requires a stable tag (no -rc)."; exit 1
-            fi
-            if git rev-parse -q --verify "refs/tags/$TAG_OVERRIDE" >/dev/null; then
-              echo "::error::Tag '$TAG_OVERRIDE' already exists."; exit 1
-            fi
-            TAG="$TAG_OVERRIDE"
-          else
-            LATEST_STABLE="$(git tag --list 'v[0-9]*' | grep -v -- '-rc\.' | sort -V | tail -1 || true)"
-            [ -z "$LATEST_STABLE" ] && LATEST_STABLE="v0.0.0"
-
-            HIGHEST_RC_BASE="$(git tag -l 'v[0-9]*-rc.*' | sed -E 's/-rc\.[0-9]+$//' | sort -V | uniq | tail -1 || true)"
-
-            promote=""
-            if [ -n "$HIGHEST_RC_BASE" ]; then
-              if [ "$(printf '%s\n' "$LATEST_STABLE" "$HIGHEST_RC_BASE" | sort -V | tail -1)" = "$HIGHEST_RC_BASE" ] && [ "$HIGHEST_RC_BASE" != "$LATEST_STABLE" ]; then
-                promote="$HIGHEST_RC_BASE"
-              fi
-            fi
-
-            if [ -n "$promote" ]; then
-              TAG="$promote"
-            else
-              BASE="${LATEST_STABLE%%-*}"
-              IFS='.' read -r MA MI PA <<<"${BASE#v}"
-              PA=$((PA+1))
-              TAG="v${MA}.${MI}.${PA}"
-            fi
-
-            if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-              echo "::error::Calculated tag '$TAG' already exists. Please provide a unique 'tag' via workflow_dispatch or commit message."; exit 1
-            fi
+          if [ -z "$TAG" ]; then
+            echo "::error::No tag provided/found."; exit 1
           fi
-
+          if echo "$TAG" | grep -q -- '-rc\.'; then
+            echo "::error::This job deploys STABLE tags only (got '$TAG')."; exit 1
+          fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "prerelease=false" >> "$GITHUB_OUTPUT"
 
-      - name: Create and push tag
-        run: |
-          git config user.name  "${GITHUB_ACTOR}"
-          git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
-          git tag -a "${{ steps.ver.outputs.tag }}" -m "release: ${{ github.sha }} on main"
-          git push origin "${{ steps.ver.outputs.tag }}"
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          tag_name:  ${{ steps.ver.outputs.tag }}
-          name:      ${{ steps.ver.outputs.tag }}
-          prerelease: ${{ steps.ver.outputs.prerelease }}
-          target_commitish: ${{ github.sha }}
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve ECR image digests for the tag
+        id: digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.ver.outputs.tag }}"
+
+          ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
+          REG="${ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+
+          get_digest () {
+            local repo="$1"
+            aws ecr describe-images \
+              --repository-name "$repo" \
+              --image-ids imageTag="$TAG" \
+              --query 'imageDetails[0].imageDigest' --output text
+          }
+
+          ANALYTICS_DIGEST="$(get_digest sbeacon-analytics-lambda-containers)"
+          ASKBEACON_DIGEST="$(get_digest sbeacon-askbeacon-lambda-containers)"
+
+          if [ -z "$ANALYTICS_DIGEST" ] || [ "$ANALYTICS_DIGEST" = "None" ]; then
+            echo "::error::analytics image not found for tag $TAG"; exit 1
+          fi
+          if [ -z "$ASKBEACON_DIGEST" ] || [ "$ASKBEACON_DIGEST" = "None" ]; then
+            echo "::error::askbeacon image not found for tag $TAG"; exit 1
+          fi
+
+          echo "TF_VAR_analytics_lambda_image_uri=${REG}/sbeacon-analytics-lambda-containers@${ANALYTICS_DIGEST}" >> $GITHUB_ENV
+          echo "TF_VAR_askbeacon_lambda_image_uri=${REG}/sbeacon-askbeacon-lambda-containers@${ASKBEACON_DIGEST}" >> $GITHUB_ENV
+
+          echo "registry=$REG" >> "$GITHUB_OUTPUT"
+          echo "analytics_digest=$ANALYTICS_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "askbeacon_digest=$ASKBEACON_DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.4
+
+      - name: Terraform Init
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} init -input=false -upgrade -backend-config=${{ env.TF_BACKEND_CONFIG }}
+
+      - name: Select Terraform Workspace
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} workspace select ${{ env.TARGET_WORKSPACE }} || terraform -chdir=${{ env.TF_WORKING_DIR }} workspace new ${{ env.TARGET_WORKSPACE }}
+
+      - name: Terraform Validate
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} validate
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform -chdir=${{ env.TF_WORKING_DIR }} plan -input=false -lock-timeout=10m -out=tfplan
+          terraform -chdir=${{ env.TF_WORKING_DIR }} show -no-color tfplan > ${{ env.TF_WORKING_DIR }}/tfplan.txt
+
+      - name: Upload Plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: prod-terraform-plan-${{ github.run_id }}
+          path: ${{ env.TF_WORKING_DIR }}/tfplan.txt
+
+      - name: Confirm production apply
+        uses: trstringer/manual-approval@v1
+        with:
+          approvers: ${{ github.actor }}
+          secret: ${{ secrets.GITHUB_TOKEN }}
+          issue-title: 'Prod apply approval for ${{ steps.ver.outputs.tag }}'
+          issue-body: 'Confirm terraform apply for prod with tag `${{ steps.ver.outputs.tag }}`'
+          exclude-workflow-initiator-as-approver: false
+          fail-on-denial: true
+
+      - name: Terraform Apply
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} apply -input=false -lock-timeout=10m -auto-approve tfplan
+
+      - name: Post summary
+        run: |
+          echo "### Deployed to **prod**" >> $GITHUB_STEP_SUMMARY
+          echo "- Tag: \`${{ steps.ver.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Registry: \`${{ steps.digests.outputs.registry }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Analytics digest: \`${{ steps.digests.outputs.analytics_digest }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- AskBeacon digest: \`${{ steps.digests.outputs.askbeacon_digest }}\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Clean up plan files
+        if: always()
+        run: rm -f ${{ env.TF_WORKING_DIR }}/tfplan ${{ env.TF_WORKING_DIR }}/tfplan.txt
 
 
