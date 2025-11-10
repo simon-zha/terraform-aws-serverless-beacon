@@ -1,57 +1,118 @@
-# # .github/workflows/deploy-prod.yml
-<<<<<<< HEAD
-name: Deploy Production Environment
-=======
-# name: Deploy Production Environment
-
-# # Main branch only allow merge
-# on:
-#   push:
-#     branches:
-#       - main
-# jobs:
-#   terraform_deploy_staging:
-#     runs-on: ubuntu-latest
-#     environment: production
-#     steps:
-#     - name: Checkout Code
-#       uses: actions/checkout@v4
-#     # in progress
-#     - name: Configure AWS Credentials 
-#     - name: Setup Terraform
-#       uses: hashicorp/setup-terraform@v3
-#     - name: Docker build
-#     - name: Docker push
-#     - name: Deploy to dev environment
-#
-#     # Example: capture and upload api_url after successful terraform apply
-#     # Uncomment and adapt below to enable automatic post-deploy artifact upload
-#     #      - name: Capture API URL (post-deploy)
-#     #        if: env.TF_APPLY_FLAG == 'true'
-#     #        run: |
-#     #          set -euo pipefail
-#     #          echo "Retrieving api_url from terraform outputs..."
-#     #          if terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw api_url > post_deploy_info.txt 2>/dev/null; then
-#     #            echo "Captured api_url"
-#     #          else
-#     #            echo "Falling back to json output parsing"
-#     #            terraform -chdir=${{ env.TF_WORKING_DIR }} output -json api_url | python -c "import sys, json; print(json.load(sys.stdin))" > post_deploy_info.txt
-#     #          fi
-#     #
-#     #      - name: Upload post-deploy info
-#     #        if: env.TF_APPLY_FLAG == 'true'
-#     #        uses: actions/upload-artifact@v4
-#     #        with:
-#     #          name: post-deploy-info-${{ github.run_id }}
-#     #          path: post_deploy_info.txt
->>>>>>> origin/dev_HealthCheckFunc
+# .github/workflows/prod-release.yml
+name: Production Deploy 
 
 on:
   push:
-    branches: [ main ]
-    tags:
-      - 'v*'
-    tags-ignore:
-      - 'v*-rc.*'
+    branches: ['main']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Override stable tag (e.g., v1.2.3)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: true
 
 jobs:
+  production:
+    runs-on: ubuntu-latest
+    uses: ./.github/workflows/deploy-autoenv-prod.yml
+    with:
+      workspace: 'production'
+      backend_config: 'backend-prod.hcl'
+      aws_region: 'ap-southeast-2'
+      apply: true
+      trigger_destroy: false
+    secrets: inherit
+
+  tag_and_release:
+    needs: production
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Resolve stable tag (promote from rc or bump patch)
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --tags --force
+
+          INPUT_TAG="${{ github.event.inputs.tag || '' }}"
+          BODY="$(git log -1 --pretty=%B || true)"
+          MSG_TAG="$(printf '%s\n' "$BODY" | sed -nE 's/.*tag:[[:space:]]*(v[0-9]+\.[0-9]+\.[0-9]+).*/\1/ip' | head -1)"
+
+          if [ -n "$INPUT_TAG" ]; then
+            TAG_OVERRIDE="$INPUT_TAG"
+          else
+            TAG_OVERRIDE="$MSG_TAG"
+          fi
+
+          if [ -n "$TAG_OVERRIDE" ]; then
+            if echo "$TAG_OVERRIDE" | grep -q -- '-rc\.'; then
+              echo "::error::Production release requires a stable tag (no -rc)."; exit 1
+            fi
+            if git rev-parse -q --verify "refs/tags/$TAG_OVERRIDE" >/dev/null; then
+              echo "::error::Tag '$TAG_OVERRIDE' already exists."; exit 1
+            fi
+            TAG="$TAG_OVERRIDE"
+          else
+            LATEST_STABLE="$(git tag --list 'v[0-9]*' | grep -v -- '-rc\.' | sort -V | tail -1 || true)"
+            [ -z "$LATEST_STABLE" ] && LATEST_STABLE="v0.0.0"
+
+            HIGHEST_RC_BASE="$(git tag -l 'v[0-9]*-rc.*' | sed -E 's/-rc\.[0-9]+$//' | sort -V | uniq | tail -1 || true)"
+
+            promote=""
+            if [ -n "$HIGHEST_RC_BASE" ]; then
+              if [ "$(printf '%s\n' "$LATEST_STABLE" "$HIGHEST_RC_BASE" | sort -V | tail -1)" = "$HIGHEST_RC_BASE" ] && [ "$HIGHEST_RC_BASE" != "$LATEST_STABLE" ]; then
+                promote="$HIGHEST_RC_BASE"
+              fi
+            fi
+
+            if [ -n "$promote" ]; then
+              TAG="$promote"
+            else
+              BASE="${LATEST_STABLE%%-*}"
+              IFS='.' read -r MA MI PA <<<"${BASE#v}"
+              PA=$((PA+1))
+              TAG="v${MA}.${MI}.${PA}"
+            fi
+
+            if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+              echo "::error::Calculated tag '$TAG' already exists. Please provide a unique 'tag' via workflow_dispatch or commit message."; exit 1
+            fi
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "prerelease=false" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tag
+        run: |
+          git config user.name  "${GITHUB_ACTOR}"
+          git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+          git tag -a "${{ steps.ver.outputs.tag }}" -m "release: ${{ github.sha }} on main"
+          git push origin "${{ steps.ver.outputs.tag }}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name:  ${{ steps.ver.outputs.tag }}
+          name:      ${{ steps.ver.outputs.tag }}
+          prerelease: ${{ steps.ver.outputs.prerelease }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
