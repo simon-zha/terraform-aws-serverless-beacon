@@ -23,7 +23,7 @@ locals {
     BEACON_API_VERSION         = var.beacon-api-version
     BEACON_ID                  = var.beacon-id
     BEACON_NAME                = var.beacon-name
-    BEACON_ENVIRONMENT         = var.beacon-environment
+    BEACON_ENVIRONMENT         = var.beacon_environment
     BEACON_DESCRIPTION         = var.beacon-description
     BEACON_VERSION             = var.beacon-version
     BEACON_WELCOME_URL         = var.beacon-welcome-url
