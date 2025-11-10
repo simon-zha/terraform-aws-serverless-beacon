@@ -64,7 +64,6 @@ jobs:
       TF_VAR_azure_openai_api_version: ${{ secrets.AZURE_OPENAI_API_VERSION }}
       TF_VAR_azure_openai_chat_deployment_name: ${{ secrets.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME }}
       TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-      TF_PLUGIN_CACHE_DIR: ~/.terraform.d/plugin-cache
 
     steps:
       - name: Checkout
@@ -99,7 +98,9 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
       - name: Prepare Terraform plugin cache dir
-        run: mkdir -p ~/.terraform.d/plugin-cache
+        run: |
+          echo "TF_PLUGIN_CACHE_DIR=$HOME/.terraform.d/plugin-cache" >> $GITHUB_ENV
+          mkdir -p "$HOME/.terraform.d/plugin-cache"
       - name: create ECR repo
         run: |
           set -euo pipefail
