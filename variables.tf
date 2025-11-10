@@ -49,10 +49,14 @@ variable "beacon-api-version" {
   default     = "v2.0.0"
 }
 
-variable "beacon-environment" {
+variable "beacon_environment" {
   type        = string
-  description = "Value for beacon environment"
-  default     = "dev"
+  default     = null
+  description = "dev / staging / prod"
+  validation {
+    condition     = var.beacon_environment == null || contains(["dev","staging","prod"], lower(var.beacon_environment))
+    error_message = "beacon_environment must be one of: dev, staging, prod."
+  }
 }
 
 variable "beacon-description" {
