@@ -102,7 +102,9 @@ jobs:
         run: |
           set -euo pipefail
           REGION="${{ env.AWS_REGION }}"
-          for repo in sbeacon-analytics-lambda-containers sbeacon-askbeacon-lambda-containers; do
+          ANALYTICS_REPO="sbeacon-${TARGET_WORKSPACE}-analytics-lambda-containers"
+          ASKBEACON_REPO="sbeacon-${TARGET_WORKSPACE}-askbeacon-lambda-containers"
+          for repo in "$ANALYTICS_REPO" "$ASKBEACON_REPO"; do
             if ! aws ecr describe-repositories --repository-names "$repo" --region "$REGION" >/dev/null 2>&1; then
               echo "Creating ECR repo: $repo"
               aws ecr create-repository \
@@ -152,7 +154,7 @@ jobs:
           context: ./lambda/analytics
           push: true
           tags: |
-            ${{ steps.ecr.outputs.registry }}/sbeacon-analytics-lambda-containers:${{ env.IMAGE_TAG }}
+            ${{ steps.ecr.outputs.registry }}/sbeacon-${{ env.TARGET_WORKSPACE }}-analytics-lambda-containers:${{ env.IMAGE_TAG }}
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache-new
 
@@ -162,7 +164,7 @@ jobs:
           context: ./lambda/askbeacon
           push: true
           tags: |
-            ${{ steps.ecr.outputs.registry }}/sbeacon-askbeacon-lambda-containers:${{ env.IMAGE_TAG }}
+            ${{ steps.ecr.outputs.registry }}/sbeacon-${{ env.TARGET_WORKSPACE }}-askbeacon-lambda-containers:${{ env.IMAGE_TAG }}
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache-new
 
@@ -187,8 +189,11 @@ jobs:
               --output text
           }
 
-          ANALYTICS_DIGEST="$(get_digest sbeacon-analytics-lambda-containers)"
-          ASKBEACON_DIGEST="$(get_digest sbeacon-askbeacon-lambda-containers)"
+          ANALYTICS_REPO="sbeacon-${TARGET_WORKSPACE}-analytics-lambda-containers"
+          ASKBEACON_REPO="sbeacon-${TARGET_WORKSPACE}-askbeacon-lambda-containers"
+
+          ANALYTICS_DIGEST="$(get_digest "$ANALYTICS_REPO")"
+          ASKBEACON_DIGEST="$(get_digest "$ASKBEACON_REPO")"
 
           if [ -z "$ANALYTICS_DIGEST" ] || [ "$ANALYTICS_DIGEST" = "None" ]; then
             echo "::error::analytics image not found for tag $TAG"; exit 1
@@ -200,8 +205,8 @@ jobs:
           ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
           REG="${ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
 
-          echo "TF_VAR_analytics_lambda_image_uri=${REG}/sbeacon-analytics-lambda-containers@${ANALYTICS_DIGEST}" >> $GITHUB_ENV
-          echo "TF_VAR_askbeacon_lambda_image_uri=${REG}/sbeacon-askbeacon-lambda-containers@${ASKBEACON_DIGEST}" >> $GITHUB_ENV
+          echo "TF_VAR_analytics_lambda_image_uri=${REG}/${ANALYTICS_REPO}@${ANALYTICS_DIGEST}" >> $GITHUB_ENV
+          echo "TF_VAR_askbeacon_lambda_image_uri=${REG}/${ASKBEACON_REPO}@${ASKBEACON_DIGEST}" >> $GITHUB_ENV
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
