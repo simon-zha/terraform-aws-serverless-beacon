@@ -1,7 +1,7 @@
 resource "aws_dynamodb_table" "datasets" {
   billing_mode = "PAY_PER_REQUEST"
   hash_key     = "id"
-  name         = "Datasets"
+  name         = "Datasets${local.environment_suffix_up}"
   tags         = var.common-tags
 
   attribute {
@@ -29,7 +29,7 @@ resource "aws_dynamodb_table" "datasets" {
 
 resource "aws_dynamodb_table" "ontologies" {
   billing_mode = "PAY_PER_REQUEST"
-  name         = "Ontologies"
+  name         = "Ontologies${local.environment_suffix_up}"
   hash_key     = "id"
   tags         = var.common-tags
 
@@ -41,7 +41,7 @@ resource "aws_dynamodb_table" "ontologies" {
 
 resource "aws_dynamodb_table" "term_labels" {
   billing_mode = "PAY_PER_REQUEST"
-  name         = "TermLabels"
+  name         = "TermLabels${local.environment_suffix_up}"
   hash_key     = "term"
   tags         = var.common-tags
 
@@ -53,7 +53,7 @@ resource "aws_dynamodb_table" "term_labels" {
 
 resource "aws_dynamodb_table" "descendant_terms" {
   billing_mode = "PAY_PER_REQUEST"
-  name         = "Descendants"
+  name         = "Descendants${local.environment_suffix_up}"
   hash_key     = "term"
   tags         = var.common-tags
 
@@ -65,7 +65,7 @@ resource "aws_dynamodb_table" "descendant_terms" {
 
 resource "aws_dynamodb_table" "anscestor_terms" {
   billing_mode = "PAY_PER_REQUEST"
-  name         = "Anscestors"
+  name         = "Anscestors${local.environment_suffix_up}"
   hash_key     = "term"
   tags         = var.common-tags
 
@@ -78,7 +78,7 @@ resource "aws_dynamodb_table" "anscestor_terms" {
 resource "aws_dynamodb_table" "vcf_summaries" {
   billing_mode = "PAY_PER_REQUEST"
   hash_key     = "vcfLocation"
-  name         = "VcfSummaries"
+  name         = "VcfSummaries${local.environment_suffix_up}"
   tags         = var.common-tags
 
   attribute {
@@ -91,7 +91,7 @@ resource "aws_dynamodb_table" "variant_duplicates" {
   billing_mode = "PAY_PER_REQUEST"
   hash_key     = "contig"
   range_key    = "datasetKey"
-  name         = "VariantDuplicates"
+  name         = "VariantDuplicates${local.environment_suffix_up}"
   tags         = var.common-tags
 
   attribute {
@@ -112,7 +112,7 @@ resource "aws_dynamodb_table" "variant_duplicates" {
 resource "aws_dynamodb_table" "variant_queries" {
   billing_mode = "PAY_PER_REQUEST"
   hash_key     = "id"
-  name         = "VariantQueries"
+  name         = "VariantQueries${local.environment_suffix_up}"
   tags         = var.common-tags
 
   attribute {
@@ -134,7 +134,7 @@ resource "aws_dynamodb_table" "variant_query_responses" {
   billing_mode = "PAY_PER_REQUEST"
   hash_key     = "id"
   range_key    = "responseNumber"
-  name         = "VariantQueryResponses"
+  name         = "VariantQueryResponses${local.environment_suffix_up}"
   tags         = var.common-tags
 
   attribute {
