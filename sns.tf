@@ -1,5 +1,5 @@
 resource "aws_sns_topic" "splitQuery" {
-  name = "splitQuery"
+  name = "splitQuery${local.environment_suffix}"
 }
 
 resource "aws_sns_topic_subscription" "splitQuery" {
@@ -9,7 +9,7 @@ resource "aws_sns_topic_subscription" "splitQuery" {
 }
 
 resource "aws_sns_topic" "performQuery" {
-  name = "performQuery"
+  name = "performQuery${local.environment_suffix}"
 }
 
 resource "aws_sns_topic_subscription" "performQuery" {
@@ -19,7 +19,7 @@ resource "aws_sns_topic_subscription" "performQuery" {
 }
 
 resource "aws_sns_topic" "indexer" {
-  name = "indexer"
+  name = "indexer${local.environment_suffix}"
 }
 
 resource "aws_sns_topic_subscription" "indexer" {
