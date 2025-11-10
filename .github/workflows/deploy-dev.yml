@@ -1,8 +1,10 @@
-
+# .github/workflows/deploy-dev.yml
 name: deploy-dev
 
 on:
-  workflow_dispatch:
+  push:
+    branches: ['develop']    
+  workflow_dispatch:        
     inputs:
       apply:
         description: "Start terraform apply (true/false)"
@@ -28,28 +30,31 @@ on:
 permissions:
   contents: read
   id-token: write
-  issues: write
-  pull-requests: write
 
 concurrency:
-  group: terraform-${{ github.workflow }}-${{ inputs.workspace || 'dev' }}
+  group: terraform-${{ github.workflow }}-${{ github.ref_name }}
   cancel-in-progress: true
 
 jobs:
   deploy:
-    name: Manual Terraform Deploy
+    name: Dev Plan/Deploy
     runs-on: ubuntu-latest
-    environment: ${{ inputs.workspace == 'dev' && 'dev' || inputs.workspace == 'staging' && 'staging' || inputs.workspace == 'prod' && 'prod' || 'dev' }}
+    environment: dev
+
     env:
-      AWS_REGION: ${{ inputs.aws_region != '' && inputs.aws_region || vars.AWS_REGION || 'ap-southeast-2' }}
+      AWS_REGION: ${{ (github.event_name == 'workflow_dispatch' && inputs.aws_region) || vars.AWS_REGION || 'ap-southeast-2' }}
       TF_WORKING_DIR: ${{ github.workspace }}/environments
-      TARGET_WORKSPACE: ${{ inputs.workspace }}
-      TF_APPLY_FLAG: ${{ inputs.apply }}
-      TF_DESTROY_FLAG: ${{ inputs.trigger_destroy }}
-      TF_BACKEND_CONFIG: ${{ inputs.backend_config }}
+      TARGET_WORKSPACE: ${{ (github.event_name == 'workflow_dispatch' && inputs.workspace) || 'dev' }}
+      TF_BACKEND_CONFIG: ${{ (github.event_name == 'workflow_dispatch' && inputs.backend_config) || 'backend-dev.hcl' }}
       TF_IN_AUTOMATION: true
       TF_INPUT: false
-      TF_VAR_region: ${{ inputs.aws_region != '' && inputs.aws_region || vars.AWS_REGION || 'ap-southeast-2' }}
+      TF_VAR_region: ${{ (github.event_name == 'workflow_dispatch' && inputs.aws_region) || vars.AWS_REGION || 'ap-southeast-2' }}
+
+      TF_APPLY_FLAG: ${{ (github.event_name == 'workflow_dispatch' && inputs.apply) || 'false' }}
+      TF_DESTROY_FLAG: ${{ (github.event_name == 'workflow_dispatch' && inputs.trigger_destroy) || 'false' }}
+
+      IMAGE_TAG: dev-${{ github.sha }}
+
       TF_VAR_beacon_admin_username: ${{ secrets.BEACON_ADMIN_USERNAME }}
       TF_VAR_beacon_admin_password: ${{ secrets.BEACON_ADMIN_PASSWORD }}
       TF_VAR_beacon_guest_username: ${{ secrets.BEACON_GUEST_USERNAME }}
@@ -59,6 +64,7 @@ jobs:
       TF_VAR_azure_openai_api_version: ${{ secrets.AZURE_OPENAI_API_VERSION }}
       TF_VAR_azure_openai_chat_deployment_name: ${{ secrets.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME }}
       TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+      TF_PLUGIN_CACHE_DIR: ~/.terraform.d/plugin-cache
 
     steps:
       - name: Checkout
@@ -93,10 +99,92 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      # ---------- Docker 构建与缓存优化 ----------
+      - name: Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: ${{ runner.os }}-buildx-
+
+      - name: ECR Login
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & Push analytics image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./lambda/analytics
+          push: true
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/sbeacon-analytics-lambda-containers:${{ env.IMAGE_TAG }}
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new
+
+      - name: Build & Push askbeacon image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./lambda/askbeacon
+          push: true
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/sbeacon-askbeacon-lambda-containers:${{ env.IMAGE_TAG }}
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new
+
+      - name: Move layer cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+      - name: Resolve ECR digests for dev tag
+        id: digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${IMAGE_TAG}"
+
+          get_digest () {
+            local repo="$1"
+            aws ecr describe-images \
+              --repository-name "$repo" \
+              --image-ids imageTag="$TAG" \
+              --query 'imageDetails[0].imageDigest' \
+              --output text
+          }
+
+          ANALYTICS_DIGEST="$(get_digest sbeacon-analytics-lambda-containers)"
+          ASKBEACON_DIGEST="$(get_digest sbeacon-askbeacon-lambda-containers)"
+
+          if [ -z "$ANALYTICS_DIGEST" ] || [ "$ANALYTICS_DIGEST" = "None" ]; then
+            echo "::error::analytics image not found for tag $TAG"; exit 1
+          fi
+          if [ -z "$ASKBEACON_DIGEST" ] || [ "$ASKBEACON_DIGEST" = "None" ]; then
+            echo "::error::askbeacon image not found for tag $TAG"; exit 1
+          fi
+
+          ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
+          REG="${ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+
+          echo "TF_VAR_analytics_lambda_image_uri=${REG}/sbeacon-analytics-lambda-containers@${ANALYTICS_DIGEST}" >> $GITHUB_ENV
+          echo "TF_VAR_askbeacon_lambda_image_uri=${REG}/sbeacon-askbeacon-lambda-containers@${ASKBEACON_DIGEST}" >> $GITHUB_ENV
+
+      # ---------- Terraform 缓存与执行 ----------
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.9.4
+
+      - name: Cache Terraform plugins & .terraform
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.terraform.d/plugin-cache
+            ${{ env.TF_WORKING_DIR }}/.terraform
+          key: ${{ runner.os }}-tf-${{ hashFiles('**/*.tf','**/*.tfvars','**/*.hcl') }}
+          restore-keys: ${{ runner.os }}-tf-
 
       - name: Terraform Init
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} init -input=false -upgrade -backend-config=${{ env.TF_BACKEND_CONFIG }}
@@ -104,31 +192,8 @@ jobs:
       - name: Select Terraform Workspace
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} workspace select ${{ env.TARGET_WORKSPACE }} || terraform -chdir=${{ env.TF_WORKING_DIR }} workspace new ${{ env.TARGET_WORKSPACE }}
 
-      - name: Ensure ECR Repositories Exist
-        if: env.TF_APPLY_FLAG == 'true'
-        run: |
-          aws ecr create-repository --repository-name sbeacon-analytics-lambda-containers \
-            --region ${{ env.AWS_REGION }} \
-            --image-scanning-configuration scanOnPush=true \
-            --image-tag-mutability MUTABLE || echo "Repo 'sbeacon-analytics-lambda-containers' already exists."
-          aws ecr create-repository --repository-name sbeacon-askbeacon-lambda-containers \
-            --region ${{ env.AWS_REGION }} \
-            --image-scanning-configuration scanOnPush=true \
-            --image-tag-mutability MUTABLE || echo "Repo 'sbeacon-askbeacon-lambda-containers' already exists."
-
-      - name: Import ECR Repos into Terraform State
-        run: |
-          set -euo pipefail
-          terraform -chdir=${{ env.TF_WORKING_DIR }} import -lock-timeout=10m \
-            'module.serverless_beacon.module.docker_image_analytics_lambda.aws_ecr_repository.this[0]' \
-            sbeacon-analytics-lambda-containers || echo "Analytics ECR already imported or not present."
-          terraform -chdir=${{ env.TF_WORKING_DIR }} import -lock-timeout=10m \
-            'module.serverless_beacon.module.docker_image_askbeacon_lambda.aws_ecr_repository.this[0]' \
-            sbeacon-askbeacon-lambda-containers || echo "AskBeacon ECR already imported or not present."
-
       - name: Terraform Validate
-        run: |
-          terraform -chdir=${{ env.TF_WORKING_DIR }} validate
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} validate
 
       - name: Terraform Plan
         id: plan
@@ -139,38 +204,12 @@ jobs:
       - name: Upload Plan
         uses: actions/upload-artifact@v4
         with:
-          name: manual-terraform-plan-${{ github.run_id }}
+          name: dev-terraform-plan-${{ github.run_id }}
           path: ${{ env.TF_WORKING_DIR }}/tfplan.txt
 
-      - name: Log in to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build analytics lambda image
-        working-directory: lambda/analytics
-        run: docker build -t ${{ steps.login-ecr.outputs.registry }}/sbeacon-analytics-lambda-containers:latest .
-
-      - name: Build askbeacon lambda image
-        working-directory: lambda/askbeacon
-        run: docker build -t ${{ steps.login-ecr.outputs.registry }}/sbeacon-askbeacon-lambda-containers:latest .
-
-      - name: Push analytics lambda image
-        run: docker push ${{ steps.login-ecr.outputs.registry }}/sbeacon-analytics-lambda-containers:latest
-
-      - name: Push askbeacon lambda image
-        run: docker push ${{ steps.login-ecr.outputs.registry }}/sbeacon-askbeacon-lambda-containers:latest
-
-      - name: Capture image digests for Terraform
-        run: |
-          analytics=$(docker inspect --format='{{index .RepoDigests 0}}' ${{ steps.login-ecr.outputs.registry }}/sbeacon-analytics-lambda-containers:latest)
-          askbeacon=$(docker inspect --format='{{index .RepoDigests 0}}' ${{ steps.login-ecr.outputs.registry }}/sbeacon-askbeacon-lambda-containers:latest)
-          echo "TF_VAR_analytics_lambda_image_uri=${analytics}" >> $GITHUB_ENV
-          echo "TF_VAR_askbeacon_lambda_image_uri=${askbeacon}" >> $GITHUB_ENV
-
-      - name: Terraform Apply
+      - name: Terraform Apply (only when allowed)
         if: env.TF_APPLY_FLAG == 'true'
-        run: |
-          terraform -chdir=${{ env.TF_WORKING_DIR }} apply -input=false -lock-timeout=10m -auto-approve tfplan
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} apply -input=false -lock-timeout=10m -auto-approve tfplan
 
       - name: Confirm destroy
         if: env.TF_DESTROY_FLAG == 'true'
