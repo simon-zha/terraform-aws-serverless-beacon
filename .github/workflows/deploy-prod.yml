@@ -89,8 +89,11 @@ jobs:
               --query 'imageDetails[0].imageDigest' --output text
           }
 
-          ANALYTICS_DIGEST="$(get_digest sbeacon-analytics-lambda-containers)"
-          ASKBEACON_DIGEST="$(get_digest sbeacon-askbeacon-lambda-containers)"
+          ANALYTICS_REPO="sbeacon-${TARGET_WORKSPACE}-analytics-lambda-containers"
+          ASKBEACON_REPO="sbeacon-${TARGET_WORKSPACE}-askbeacon-lambda-containers"
+
+          ANALYTICS_DIGEST="$(get_digest "$ANALYTICS_REPO")"
+          ASKBEACON_DIGEST="$(get_digest "$ASKBEACON_REPO")"
 
           if [ -z "$ANALYTICS_DIGEST" ] || [ "$ANALYTICS_DIGEST" = "None" ]; then
             echo "::error::analytics image not found for tag $TAG"; exit 1
@@ -99,8 +102,8 @@ jobs:
             echo "::error::askbeacon image not found for tag $TAG"; exit 1
           fi
 
-          echo "TF_VAR_analytics_lambda_image_uri=${REG}/sbeacon-analytics-lambda-containers@${ANALYTICS_DIGEST}" >> $GITHUB_ENV
-          echo "TF_VAR_askbeacon_lambda_image_uri=${REG}/sbeacon-askbeacon-lambda-containers@${ASKBEACON_DIGEST}" >> $GITHUB_ENV
+          echo "TF_VAR_analytics_lambda_image_uri=${REG}/${ANALYTICS_REPO}@${ANALYTICS_DIGEST}" >> $GITHUB_ENV
+          echo "TF_VAR_askbeacon_lambda_image_uri=${REG}/${ASKBEACON_REPO}@${ASKBEACON_DIGEST}" >> $GITHUB_ENV
 
           echo "registry=$REG" >> "$GITHUB_OUTPUT"
           echo "analytics_digest=$ANALYTICS_DIGEST" >> "$GITHUB_OUTPUT"
