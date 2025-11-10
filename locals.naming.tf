@@ -1,5 +1,5 @@
 locals {
-  environment_slug_initial = regexreplace(lower(var.beacon_environment), "[^0-9a-z-]", "-")
+  environment_slug_initial = regexreplace(lower(var.beacon-environment), "[^0-9a-z-]", "-")
   environment_slug_collapsed = regexreplace(local.environment_slug_initial, "-{2,}", "-")
   environment_slug_trimmed_head = regexreplace(local.environment_slug_collapsed, "^-", "")
   environment_slug_trimmed = regexreplace(local.environment_slug_trimmed_head, "-$", "")
