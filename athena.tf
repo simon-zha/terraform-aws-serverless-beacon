@@ -6,14 +6,14 @@
 # Athena does not support - in database names, use _ instead
 #
 resource "aws_glue_catalog_database" "metadata-database" {
-  name = "sbeacon_metadata"
+  name = "sbeacon_${local.environment_snake}_metadata"
 }
 
 # 
 # Cohorts metadata
 # 
 resource "aws_glue_catalog_table" "sbeacon-cohorts" {
-  name          = "sbeacon_cohorts"
+  name          = "sbeacon_${local.environment_snake}_cohorts"
   database_name = aws_glue_catalog_database.metadata-database.name
 
   table_type = "EXTERNAL_TABLE"
@@ -91,7 +91,7 @@ resource "aws_glue_catalog_table" "sbeacon-cohorts" {
 # Datasets metadata
 # 
 resource "aws_glue_catalog_table" "sbeacon-datasets" {
-  name          = "sbeacon_datasets"
+  name          = "sbeacon_${local.environment_snake}_datasets"
   database_name = aws_glue_catalog_database.metadata-database.name
 
   table_type = "EXTERNAL_TABLE"
@@ -184,7 +184,7 @@ resource "aws_glue_catalog_table" "sbeacon-datasets" {
 # Individuals metadata
 # 
 resource "aws_glue_catalog_table" "sbeacon-individuals" {
-  name          = "sbeacon_individuals"
+  name          = "sbeacon_${local.environment_snake}_individuals"
   database_name = aws_glue_catalog_database.metadata-database.name
 
   table_type = "EXTERNAL_TABLE"
@@ -292,7 +292,7 @@ resource "aws_glue_catalog_table" "sbeacon-individuals" {
 # Biosamples metadata
 # 
 resource "aws_glue_catalog_table" "sbeacon-biosamples" {
-  name          = "sbeacon_biosamples"
+  name          = "sbeacon_${local.environment_snake}_biosamples"
   database_name = aws_glue_catalog_database.metadata-database.name
 
   table_type = "EXTERNAL_TABLE"
@@ -434,7 +434,7 @@ resource "aws_glue_catalog_table" "sbeacon-biosamples" {
 # Runs metadata
 # 
 resource "aws_glue_catalog_table" "sbeacon-runs" {
-  name          = "sbeacon_runs"
+  name          = "sbeacon_${local.environment_snake}_runs"
   database_name = aws_glue_catalog_database.metadata-database.name
 
   table_type = "EXTERNAL_TABLE"
@@ -532,7 +532,7 @@ resource "aws_glue_catalog_table" "sbeacon-runs" {
 # Analyses metadata
 # 
 resource "aws_glue_catalog_table" "sbeacon-analyses" {
-  name          = "sbeacon_analyses"
+  name          = "sbeacon_${local.environment_snake}_analyses"
   database_name = aws_glue_catalog_database.metadata-database.name
 
   table_type = "EXTERNAL_TABLE"
@@ -631,11 +631,11 @@ resource "aws_glue_catalog_table" "sbeacon-analyses" {
 # aws cloudformation is used because of terraform bug - https://github.com/hashicorp/terraform-provider-aws/issues/26686
 # 
 resource "aws_cloudformation_stack" "sbeacon_terms_index_stack" {
-  name = "sbeacon-terms-index-stack"
+  name = "${local.environment_prefix}-terms-index-stack"
 
   parameters = {
     DatabaseName = aws_glue_catalog_database.metadata-database.name
-    TableName    = "sbeacon_terms_index"
+    TableName    = "sbeacon_${local.environment_snake}_terms_index"
   }
 
 
@@ -707,11 +707,11 @@ resource "aws_cloudformation_stack" "sbeacon_terms_index_stack" {
 # aws cloudformation is used because of terraform bug - https://github.com/hashicorp/terraform-provider-aws/issues/26686
 # 
 resource "aws_cloudformation_stack" "sbeacon_terms_stack" {
-  name = "sbeacon-terms-stack"
+  name = "${local.environment_prefix}-terms-stack"
 
   parameters = {
     DatabaseName = aws_glue_catalog_database.metadata-database.name
-    TableName    = "sbeacon_terms"
+    TableName    = "sbeacon_${local.environment_snake}_terms"
   }
 
 
@@ -786,7 +786,7 @@ resource "aws_cloudformation_stack" "sbeacon_terms_stack" {
 # Connected entities
 # 
 resource "aws_glue_catalog_table" "sbeacon-relations" {
-  name          = "sbeacon_relations"
+  name          = "sbeacon_${local.environment_snake}_relations"
   database_name = aws_glue_catalog_database.metadata-database.name
 
   table_type = "EXTERNAL_TABLE"
@@ -847,7 +847,7 @@ resource "aws_glue_catalog_table" "sbeacon-relations" {
 
 resource "aws_glue_crawler" "sbeacon-crawler" {
   database_name = aws_glue_catalog_database.metadata-database.name
-  name          = "sbeacon-crawler"
+  name          = "${local.environment_prefix}-crawler"
   role          = aws_iam_role.glue_role.arn
 
   catalog_target {
@@ -876,7 +876,7 @@ EOF
 }
 
 resource "aws_athena_workgroup" "sbeacon-workgroup" {
-  name          = "query_workgroup"
+  name          = "query-workgroup${local.environment_suffix}"
   force_destroy = true
 
   configuration {
@@ -899,7 +899,7 @@ resource "aws_athena_workgroup" "sbeacon-workgroup" {
 # https://www.xerris.com/insights/building-modern-data-warehouses-with-s3-glue-and-athena-part-3/
 #
 resource "aws_iam_role" "glue_role" {
-  name               = "glue_role"
+  name               = "glue-role${local.environment_suffix}"
   assume_role_policy = data.aws_iam_policy_document.glue.json
 }
 
@@ -926,7 +926,7 @@ data "aws_iam_policy_document" "extra-glue-policy-document" {
 }
 
 resource "aws_iam_policy" "extra-glue-policy" {
-  name        = "extra-glue-policy"
+  name        = "extra-glue-policy${local.environment_suffix}"
   description = "Extra permissions"
   policy      = data.aws_iam_policy_document.extra-glue-policy-document.json
 
