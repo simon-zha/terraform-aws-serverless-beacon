@@ -171,7 +171,6 @@ jobs:
           echo "TF_VAR_analytics_lambda_image_uri=${REG}/sbeacon-analytics-lambda-containers@${ANALYTICS_DIGEST}" >> $GITHUB_ENV
           echo "TF_VAR_askbeacon_lambda_image_uri=${REG}/sbeacon-askbeacon-lambda-containers@${ASKBEACON_DIGEST}" >> $GITHUB_ENV
 
-      # ---------- Terraform 缓存与执行 ----------
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
