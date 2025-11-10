@@ -10,7 +10,7 @@
 # Cohorts metadata
 # 
 resource "aws_glue_catalog_table" "sbeacon-cohorts-cache" {
-  name          = "sbeacon_cohorts_cache"
+  name          = "sbeacon_${local.environment_snake}_cohorts_cache"
   database_name = aws_glue_catalog_database.metadata-database.name
 
   table_type = "EXTERNAL_TABLE"
@@ -88,7 +88,7 @@ resource "aws_glue_catalog_table" "sbeacon-cohorts-cache" {
 # Datasets metadata
 # 
 resource "aws_glue_catalog_table" "sbeacon-datasets-cache" {
-  name          = "sbeacon_datasets_cache"
+  name          = "sbeacon_${local.environment_snake}_datasets_cache"
   database_name = aws_glue_catalog_database.metadata-database.name
 
   table_type = "EXTERNAL_TABLE"
@@ -181,7 +181,7 @@ resource "aws_glue_catalog_table" "sbeacon-datasets-cache" {
 # Individuals metadata
 # 
 resource "aws_glue_catalog_table" "sbeacon-individuals-cache" {
-  name          = "sbeacon_individuals_cache"
+  name          = "sbeacon_${local.environment_snake}_individuals_cache"
   database_name = aws_glue_catalog_database.metadata-database.name
 
   table_type = "EXTERNAL_TABLE"
@@ -289,7 +289,7 @@ resource "aws_glue_catalog_table" "sbeacon-individuals-cache" {
 # Biosamples metadata
 # 
 resource "aws_glue_catalog_table" "sbeacon-biosamples-cache" {
-  name          = "sbeacon_biosamples_cache"
+  name          = "sbeacon_${local.environment_snake}_biosamples_cache"
   database_name = aws_glue_catalog_database.metadata-database.name
 
   table_type = "EXTERNAL_TABLE"
@@ -431,7 +431,7 @@ resource "aws_glue_catalog_table" "sbeacon-biosamples-cache" {
 # Runs metadata
 # 
 resource "aws_glue_catalog_table" "sbeacon-runs-cache" {
-  name          = "sbeacon_runs_cache"
+  name          = "sbeacon_${local.environment_snake}_runs_cache"
   database_name = aws_glue_catalog_database.metadata-database.name
 
   table_type = "EXTERNAL_TABLE"
@@ -529,7 +529,7 @@ resource "aws_glue_catalog_table" "sbeacon-runs-cache" {
 # Analyses metadata
 # 
 resource "aws_glue_catalog_table" "sbeacon-analyses-cache" {
-  name          = "sbeacon_analyses_cache"
+  name          = "sbeacon_${local.environment_snake}_analyses_cache"
   database_name = aws_glue_catalog_database.metadata-database.name
 
   table_type = "EXTERNAL_TABLE"
@@ -627,7 +627,7 @@ resource "aws_glue_catalog_table" "sbeacon-analyses-cache" {
 # Ontology terms cache - used to build proper index later on
 # 
 resource "aws_glue_catalog_table" "sbeacon-terms-cache" {
-  name          = "sbeacon_terms_cache"
+  name          = "sbeacon_${local.environment_snake}_terms_cache"
   database_name = aws_glue_catalog_database.metadata-database.name
 
   table_type = "EXTERNAL_TABLE"
