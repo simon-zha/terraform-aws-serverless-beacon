@@ -60,41 +60,44 @@ resource "aws_cognito_user_group" "admin-group" {
   role_arn     = aws_iam_role.admin-group-role.arn
 }
 
- data "aws_iam_policy_document" "admin-group-assume-role-policy" {
-   statement {
-     effect = "Deny"
+data "aws_iam_policy_document" "admin-group-assume-role-policy" {
+  statement {
+    effect = "Deny"
 
-     principals {
-       type        = "Federated"
-       identifiers = ["cognito-identity.amazonaws.com"]
-     }
-     actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = ["cognito-identity.amazonaws.com"]
+    }
 
-     condition {
-       test     = "StringEquals"
-       variable = "cognito-identity.amazonaws.com:aud"
-       values   = ["us-east-1:12345678-dead-beef-cafe-123456790ab"]
-     }
+    actions = ["sts:AssumeRoleWithWebIdentity"]
 
-     condition {
-       test     = "ForAnyValue:StringLike"
-       variable = "cognito-identity.amazonaws.com:amr"
-       values   = ["authenticated"]
-     }
-   }
-   statement {
-     effect = "Deny"
+    condition {
+      test     = "StringEquals"
+      variable = "cognito-identity.amazonaws.com:aud"
+      values   = ["us-east-1:12345678-dead-beef-cafe-123456790ab"]
+    }
 
-     principals {
-       type = "AWS"
-       identifiers = [
-         "arn:aws:sts::${data.aws_caller_identity.this.account_id}:assumed-role/admin/admin"
-       ]
-     }
+    condition {
+      test     = "ForAnyValue/StringLike"
+      variable = "cognito-identity.amazonaws.com:amr"
+      values   = ["authenticated"]
+    }
+  }
 
-     actions = ["sts:AssumeRole"]
-   }
- }
+  # --- invalid principal block that caused MalformedPolicyDocument ---
+  # statement {
+  #   effect = "Deny"
+  #
+  #   principals {
+  #     type = "AWS"
+  #     identifiers = [
+  #       "arn:aws:sts::${data.aws_caller_identity.this.account_id}:assumed-role/admin/admin"
+  #     ]
+  #   }
+  #
+  #   actions = ["sts:AssumeRole"]
+  # }
+}
 
  resource "aws_iam_role" "admin-group-role" {
    name               = "admin-group-role${local.environment_suffix}"
