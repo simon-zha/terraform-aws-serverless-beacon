@@ -12,7 +12,7 @@ from utils.auth import authenticate_endpoint
 
 router = LambdaRouter()
 
-
+# Hello world
 @router.attach("/ask/analytics/prompt_extraction", "post", authenticate_endpoint)
 def prompt_extraction(event, _):
     body_dict = json.loads(event.get("body"))
