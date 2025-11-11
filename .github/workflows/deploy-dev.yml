@@ -110,6 +110,12 @@ jobs:
           set -euo pipefail
           REGION="${{ env.AWS_REGION }}"
           WORKSPACE="${TARGET_WORKSPACE}"
+          TF_DIR="${TF_WORKING_DIR}"
+
+          terraform -chdir="${TF_DIR}" init -input=false -backend-config="${TF_BACKEND_CONFIG}"
+          terraform -chdir="${TF_DIR}" workspace select "${WORKSPACE}" \
+            || terraform -chdir="${TF_DIR}" workspace new "${WORKSPACE}"
+
           ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
 
           declare -A MODULE_ADDRS=(
@@ -152,9 +158,9 @@ jobs:
             arn="arn:aws:ecr:${REGION}:${ACCOUNT_ID}:repository/${repo}"
             addr="${MODULE_ADDRS[$kind]}"
 
-            if ! terraform -chdir=environments state show "$addr" >/dev/null 2>&1; then
+            if ! terraform -chdir="${TF_DIR}" state show "$addr" >/dev/null 2>&1; then
               echo "Importing $repo into Terraform state"
-              terraform -chdir=environments import "$addr" "$arn"
+              terraform -chdir="${TF_DIR}" import "$addr" "$arn"
             else
               echo "Terraform already tracks $repo, skip import"
             fi
