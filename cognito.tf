@@ -78,7 +78,7 @@ data "aws_iam_policy_document" "admin-group-assume-role-policy" {
     }
 
     condition {
-      test     = "ForAnyValue/StringLike"
+      test     = "ForAnyValue:StringLike"
       variable = "cognito-identity.amazonaws.com:amr"
       values   = ["authenticated"]
     }

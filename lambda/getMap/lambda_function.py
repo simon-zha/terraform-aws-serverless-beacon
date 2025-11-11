@@ -2,7 +2,7 @@ import json
 
 from shared.apiutils import beacon_map, bundle_response
 
-
+#Hello world
 def lambda_handler(event, context):
     print("Event Received: {}".format(json.dumps(event)))
     response = beacon_map()
