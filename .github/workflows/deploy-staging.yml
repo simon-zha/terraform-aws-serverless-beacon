@@ -19,20 +19,30 @@ concurrency:
 jobs:
   staging:
     if: github.event.pull_request.merged == true
-    uses: ./.github/workflows/deploy-autoenv-dev.yml
-    with:
-      workspace: 'staging'
-      backend_config: 'backend-staging.hcl'
-      aws_region: 'ap-southeast-2'
-      apply: true
-      trigger_destroy: false
-    secrets: inherit
-
-  tag_and_release:
-    if: >
-      github.event.pull_request.merged == true &&
-      github.event.pull_request.base.ref == 'release'
     runs-on: ubuntu-latest
+    environment: staging
+
+    env:
+      AWS_REGION: ap-southeast-2
+      TF_WORKING_DIR: ${{ github.workspace }}/environments
+      TARGET_WORKSPACE: staging
+      TF_BACKEND_CONFIG: backend-staging.hcl
+      TF_IN_AUTOMATION: true
+      TF_INPUT: false
+      TF_VAR_region: ap-southeast-2
+
+      TF_APPLY_FLAG: 'true'
+      TF_DESTROY_FLAG: 'false'
+
+      TF_VAR_beacon_admin_username: ${{ secrets.BEACON_ADMIN_USERNAME }}
+      TF_VAR_beacon_admin_password: ${{ secrets.BEACON_ADMIN_PASSWORD }}
+      TF_VAR_beacon_guest_username: ${{ secrets.BEACON_GUEST_USERNAME }}
+      TF_VAR_beacon_guest_password: ${{ secrets.BEACON_GUEST_PASSWORD }}
+      TF_VAR_azure_openai_api_key: ${{ secrets.AZURE_OPENAI_API_KEY }}
+      TF_VAR_azure_openai_endpoint: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+      TF_VAR_azure_openai_api_version: ${{ secrets.AZURE_OPENAI_API_VERSION }}
+      TF_VAR_azure_openai_chat_deployment_name: ${{ secrets.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME }}
+      TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
 
     steps:
       - name: Checkout
@@ -40,30 +50,66 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: true
+          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
 
-      - name: Resolve tag and release type (from PR description)
+      - name: Set up Python (for docker_prep.py)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential autoconf automake libtool pkg-config zlib1g-dev libcurl4-openssl-dev libbz2-dev liblzma-dev
+
+      - name: Run init script
+        run: |
+          chmod +x ./init.sh
+          ./init.sh
+
+      - name: Prepare analytics shared assets
+        working-directory: lambda/analytics
+        run: python docker_prep.py
+
+      - name: Prepare askbeacon shared assets
+        working-directory: lambda/askbeacon
+        run: python docker_prep.py
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.4
+
+      - name: Prepare Terraform plugin cache dir
+        run: |
+          echo "TF_PLUGIN_CACHE_DIR=$HOME/.terraform.d/plugin-cache" >> $GITHUB_ENV
+          mkdir -p "$HOME/.terraform.d/plugin-cache"
+
+      - name: Resolve RC tag
         id: ver
         shell: bash
         run: |
           set -euo pipefail
           git fetch --tags --force
 
-          # Read PR description
           BODY="${{ github.event.pull_request.body || '' }}"
-
-          # Optional overrides in PR description (case-insensitive, one per line):
-          #   tag: v1.2.3-rc.4   or   tag: v1.2.3
-          #   release-type: prerelease   or   release-type: stable
           TAG_OVERRIDE="$(printf '%s\n' "$BODY" | sed -nE 's/.*tag:[[:space:]]*(v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?).*/\1/ip' | head -1)"
-          TYPE_OVERRIDE="$(printf '%s\n' "$BODY" | sed -nE 's/.*release-type:[[:space:]]*(prerelease|stable).*/\1/ip' | tr '[:upper:]' '[:lower:]' | head -1)"
 
           if [ -n "$TAG_OVERRIDE" ]; then
+            if ! echo "$TAG_OVERRIDE" | grep -q -- '-rc\.'; then
+              echo "::error::For staging we require an rc tag (e.g., v1.2.3-rc.1)."; exit 1
+            fi
             if git rev-parse -q --verify "refs/tags/$TAG_OVERRIDE" >/dev/null; then
               echo "::error::Tag '$TAG_OVERRIDE' already exists."; exit 1
             fi
             TAG="$TAG_OVERRIDE"
           else
-            # Auto-generate next rc from latest stable vX.Y.Z
             LATEST="$(git tag --list 'v[0-9]*' | grep -v -- '-rc\.' | sort -V | tail -1)"
             [ -z "$LATEST" ] && LATEST="v0.0.0"
             BASE="${LATEST%%-*}"
@@ -82,45 +128,167 @@ jobs:
             TAG="${BASE}-rc.${N}"
           fi
 
-          if [ -n "$TYPE_OVERRIDE" ]; then
-            case "$TYPE_OVERRIDE" in
-              prerelease) PRERELEASE=true ;;
-              stable)     PRERELEASE=false ;;
-              *) echo "::error::Invalid release-type override."; exit 1 ;;
-            esac
-            if [ "$PRERELEASE" = false ] && echo "$TAG" | grep -q -- '-rc\.'; then
-              echo "::error::release-type=stable requires a non-rc tag (e.g., v1.2.3)."; exit 1
-            fi
-            if [ "$PRERELEASE" = true ] && ! echo "$TAG" | grep -q -- '-rc\.'; then
-              echo "::error::release-type=prerelease requires an rc tag (e.g., v1.2.3-rc.1)."; exit 1
-            fi
-          else
-            if echo "$TAG" | grep -q -- '-rc\.'; then PRERELEASE=true; else PRERELEASE=false; fi
-          fi
-
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "prerelease=true" >> "$GITHUB_OUTPUT"
 
-      - name: Create and push tag
+      - name: Ensure ECR repos & import into Terraform (staging)
+        run: |
+          set -euo pipefail
+          REGION="${{ env.AWS_REGION }}"
+          WORKSPACE="staging"
+          TF_DIR="${{ env.TF_WORKING_DIR }}"
+
+          terraform -chdir="${TF_DIR}" init -input=false -backend-config="${{ env.TF_BACKEND_CONFIG }}"
+          terraform -chdir="${TF_DIR}" workspace select "${WORKSPACE}" \
+            || terraform -chdir="${TF_DIR}" workspace new "${WORKSPACE}"
+
+          declare -A MODULE_ADDRS=(
+            ["analytics"]="module.serverless_beacon.module.docker_image_analytics_lambda.aws_ecr_repository.this[0]"
+            ["askbeacon"]="module.serverless_beacon.module.docker_image_askbeacon_lambda.aws_ecr_repository.this[0]"
+          )
+
+          for kind in analytics askbeacon; do
+            repo="sbeacon-${WORKSPACE}-${kind}-lambda-containers"
+
+            if ! aws ecr describe-repositories --repository-names "$repo" --region "$REGION" >/dev/null 2>&1; then
+              echo "Creating ECR repo: $repo"
+              aws ecr create-repository \
+                --repository-name "$repo" \
+                --region "$REGION" \
+                --image-scanning-configuration scanOnPush=true \
+                --image-tag-mutability MUTABLE >/dev/null
+              aws ecr put-lifecycle-policy \
+                --repository-name "$repo" \
+                --lifecycle-policy-text '{
+                  "rules":[
+                    {
+                      "rulePriority":1,
+                      "description":"Expire untagged after 7 days",
+                      "selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":7},
+                      "action":{"type":"expire"}
+                    },
+                    {
+                      "rulePriority":10,
+                      "description":"Keep last 20 gh-/v* tags",
+                      "selection":{"tagStatus":"tagged","tagPrefixList":["gh-","v"],"countType":"imageCountMoreThan","countNumber":20},
+                      "action":{"type":"expire"}
+                    }
+                  ]
+                }' >/dev/null || true
+            else
+              echo "ECR repo exists: $repo"
+            fi
+
+            addr="${MODULE_ADDRS[$kind]}"
+            if ! terraform -chdir="${TF_DIR}" state show "$addr" >/dev/null 2>&1; then
+              echo "Importing $repo into Terraform state"
+              terraform -chdir="${TF_DIR}" import "$addr" "$repo"
+            else
+              echo "Terraform already tracks $repo, skip import"
+            fi
+          done
+
+      - name: ECR Login
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & Push analytics image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./lambda/analytics
+          push: true
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/sbeacon-staging-analytics-lambda-containers:gh-${{ github.sha }}
+            ${{ steps.ecr.outputs.registry }}/sbeacon-staging-analytics-lambda-containers:${{ steps.ver.outputs.tag }}
+
+      - name: Build & Push askbeacon image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./lambda/askbeacon
+          push: true
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/sbeacon-staging-askbeacon-lambda-containers:gh-${{ github.sha }}
+            ${{ steps.ecr.outputs.registry }}/sbeacon-staging-askbeacon-lambda-containers:${{ steps.ver.outputs.tag }}
+
+      - name: Resolve ECR digests for RC tag
+        id: digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.ver.outputs.tag }}"
+          get_digest () {
+            local repo="$1"
+            aws ecr describe-images \
+              --repository-name "$repo" \
+              --image-ids imageTag="$TAG" \
+              --query 'imageDetails[0].imageDigest' \
+              --output text
+          }
+          ANALYTICS_REPO="sbeacon-staging-analytics-lambda-containers"
+          ASKBEACON_REPO="sbeacon-staging-askbeacon-lambda-containers"
+          ANALYTICS_DIGEST="$(get_digest "$ANALYTICS_REPO")"
+          ASKBEACON_DIGEST="$(get_digest "$ASKBEACON_REPO")"
+          if [ -z "$ANALYTICS_DIGEST" ] || [ "$ANALYTICS_DIGEST" = "None" ]; then
+            echo "::error::analytics image not found for tag $TAG"; exit 1
+          fi
+          if [ -z "$ASKBEACON_DIGEST" ] || [ "$ASKBEACON_DIGEST" = "None" ]; then
+            echo "::error::askbeacon image not found for tag $TAG"; exit 1
+          fi
+          ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
+          REG="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          echo "TF_VAR_analytics_lambda_image_uri=${REG}/${ANALYTICS_REPO}@${ANALYTICS_DIGEST}" >> $GITHUB_ENV
+          echo "TF_VAR_askbeacon_lambda_image_uri=${REG}/${ASKBEACON_REPO}@${ASKBEACON_DIGEST}" >> $GITHUB_ENV
+
+      - name: Cache Terraform plugins & .terraform
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.terraform.d/plugin-cache
+            ${{ env.TF_WORKING_DIR }}/.terraform
+          key: ${{ runner.os }}-tf-${{ hashFiles('**/*.tf','**/*.tfvars','**/*.hcl') }}
+          restore-keys: ${{ runner.os }}-tf-
+
+      - name: Terraform Init
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} init -input=false -upgrade -backend-config=${{ env.TF_BACKEND_CONFIG }}
+
+      - name: Select Terraform Workspace
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} workspace select ${{ env.TARGET_WORKSPACE }} || terraform -chdir=${{ env.TF_WORKING_DIR }} workspace new ${{ env.TARGET_WORKSPACE }}
+
+      - name: Terraform Validate
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} validate
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform -chdir=${{ env.TF_WORKING_DIR }} plan -input=false -lock-timeout=10m -out=tfplan
+          terraform -chdir=${{ env.TF_WORKING_DIR }} show -no-color tfplan > ${{ env.TF_WORKING_DIR }}/tfplan.txt
+
+      - name: Upload Plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-terraform-plan-${{ github.run_id }}
+          path: ${{ env.TF_WORKING_DIR }}/tfplan.txt
+
+      - name: Terraform Apply
+        if: env.TF_APPLY_FLAG == 'true'
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} apply -input=false -lock-timeout=10m -auto-approve tfplan
+
+      - name: Create and push RC tag
         run: |
           git config user.name  "${GITHUB_ACTOR}"
           git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
-          git tag -a "${{ steps.ver.outputs.tag }}" -m "release: ${{ github.sha }} via PR #${{ github.event.pull_request.number }}"
+          git tag -a "${{ steps.ver.outputs.tag }}" "${{ github.event.pull_request.merge_commit_sha || github.sha }}" -m "staging rc: ${{ github.event.pull_request.merge_commit_sha || github.sha }} via PR #${{ github.event.pull_request.number }}"
           git push origin "${{ steps.ver.outputs.tag }}"
 
-      - name: Create GitHub Release
+      - name: Create GitHub Pre-release
         uses: softprops/action-gh-release@v2
         with:
           tag_name:  ${{ steps.ver.outputs.tag }}
           name:      ${{ steps.ver.outputs.tag }}
-          prerelease: ${{ steps.ver.outputs.prerelease }}
-          target_commitish: ${{ github.sha }}
+          prerelease: true
+          target_commitish: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          
-
-
-
 
 
