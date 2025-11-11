@@ -105,12 +105,12 @@ locals {
       name_suffix        = "DEV"
     }
     staging = {
-      beacon_enable_auth = true
+      beacon_enable_auth = false
       beacon_description = "Serverless Beacon STAGING environment"
       name_suffix        = "STAGING"
     }
     prod = {
-      beacon_enable_auth = true
+      beacon_enable_auth = false
       beacon_description = "Serverless Beacon PROD environment"
       name_suffix        = "PROD"
     }
