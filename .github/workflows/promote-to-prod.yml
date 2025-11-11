@@ -113,6 +113,16 @@ jobs:
       - name: ECR Login
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Assert staging images exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          RC="${{ steps.ver.outputs.rc }}"
+          aws ecr describe-images --repository-name sbeacon-staging-analytics-lambda-containers \
+            --image-ids imageTag="$RC" --query 'imageDetails[0].imageDigest' --output text
+          aws ecr describe-images --repository-name sbeacon-staging-askbeacon-lambda-containers \
+            --image-ids imageTag="$RC" --query 'imageDetails[0].imageDigest' --output text
+
       - name: Copy images STAGING -> PROD via pull/tag/push (no rebuild)
         id: copy
         shell: bash
