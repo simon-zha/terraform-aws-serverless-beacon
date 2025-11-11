@@ -135,21 +135,18 @@ jobs:
         run: |
           set -euo pipefail
           REGION="${{ env.AWS_REGION }}"
-          WORKSPACE="staging"
-          TF_DIR="${{ env.TF_WORKING_DIR }}"
-
-          terraform -chdir="${TF_DIR}" init -input=false -backend-config="${{ env.TF_BACKEND_CONFIG }}"
+          WORKSPACE="${TARGET_WORKSPACE}"
+          TF_DIR="${TF_WORKING_DIR}"
+          terraform -chdir="${TF_DIR}" init -input=false -backend-config="${TF_BACKEND_CONFIG}"
           terraform -chdir="${TF_DIR}" workspace select "${WORKSPACE}" \
             || terraform -chdir="${TF_DIR}" workspace new "${WORKSPACE}"
-
+          ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
           declare -A MODULE_ADDRS=(
             ["analytics"]="module.serverless_beacon.module.docker_image_analytics_lambda.aws_ecr_repository.this[0]"
             ["askbeacon"]="module.serverless_beacon.module.docker_image_askbeacon_lambda.aws_ecr_repository.this[0]"
           )
-
           for kind in analytics askbeacon; do
             repo="sbeacon-${WORKSPACE}-${kind}-lambda-containers"
-
             if ! aws ecr describe-repositories --repository-names "$repo" --region "$REGION" >/dev/null 2>&1; then
               echo "Creating ECR repo: $repo"
               aws ecr create-repository \
@@ -169,8 +166,8 @@ jobs:
                     },
                     {
                       "rulePriority":10,
-                      "description":"Keep last 20 gh-/v* tags",
-                      "selection":{"tagStatus":"tagged","tagPrefixList":["gh-","v"],"countType":"imageCountMoreThan","countNumber":20},
+                      "description":"Keep last 15 dev-/gh-/v tagged",
+                      "selection":{"tagStatus":"tagged","tagPrefixList":["dev-","gh-","v"],"countType":"imageCountMoreThan","countNumber":15},
                       "action":{"type":"expire"}
                     }
                   ]
@@ -178,13 +175,13 @@ jobs:
             else
               echo "ECR repo exists: $repo"
             fi
-
+            name="sbeacon-${WORKSPACE}-${kind}-lambda-containers"
             addr="${MODULE_ADDRS[$kind]}"
             if ! terraform -chdir="${TF_DIR}" state show "$addr" >/dev/null 2>&1; then
-              echo "Importing $repo into Terraform state"
-              terraform -chdir="${TF_DIR}" import "$addr" "$repo"
+              echo "Importing $name into Terraform state"
+              terraform -chdir="${TF_DIR}" import "$addr" "$name"
             else
-              echo "Terraform already tracks $repo, skip import"
+              echo "Terraform already tracks $name, skip import"
             fi
           done
 
@@ -290,5 +287,6 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 
 
