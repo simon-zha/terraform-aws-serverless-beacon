@@ -14,6 +14,8 @@ on:
 permissions:
   contents: read
   id-token: write
+  issues: write
+  pull-requests: write
 
 concurrency:
   group: production-deploy
@@ -159,5 +161,6 @@ jobs:
       - name: Clean up plan files
         if: always()
         run: rm -f ${{ env.TF_WORKING_DIR }}/tfplan ${{ env.TF_WORKING_DIR }}/tfplan.txt
+
 
 
