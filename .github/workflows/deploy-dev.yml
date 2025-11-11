@@ -272,8 +272,7 @@ jobs:
           name: dev-terraform-plan-${{ github.run_id }}
           path: ${{ env.TF_WORKING_DIR }}/tfplan.txt
 
-      - name: Terraform Apply (only when allowed)
-        if: env.TF_APPLY_FLAG == 'true'
+      - name: Terraform Apply
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} apply -input=false -lock-timeout=10m -auto-approve tfplan
 
       - name: Confirm destroy
