@@ -64,35 +64,82 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
 
-      - name: Retag ECR images to stable (no rebuild)
+      - name: Ensure prod ECR repos (create if missing)
+        shell: bash
+        run: |
+          set -euo pipefail
+          REGION="${{ vars.AWS_REGION || 'ap-southeast-2' }}"
+      
+          ensure_repo () {
+            local repo="$1"
+            if ! aws ecr describe-repositories --repository-names "$repo" --region "$REGION" >/dev/null 2>&1; then
+              echo "Creating ECR repo: $repo"
+              aws ecr create-repository \
+                --repository-name "$repo" \
+                --region "$REGION" \
+                --image-scanning-configuration scanOnPush=true \
+                --image-tag-mutability MUTABLE >/dev/null
+      
+              aws ecr put-lifecycle-policy \
+                --repository-name "$repo" \
+                --lifecycle-policy-text '{
+                  "rules":[
+                    {
+                      "rulePriority":1,
+                      "description":"Expire untagged after 7 days",
+                      "selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":7},
+                      "action":{"type":"expire"}
+                    },
+                    {
+                      "rulePriority":10,
+                      "description":"Keep last 20 gh-/v tags",
+                      "selection":{"tagStatus":"tagged","tagPrefixList":["gh-","v"],"countType":"imageCountMoreThan","countNumber":20},
+                      "action":{"type":"expire"}
+                    }
+                  ]
+                }' >/dev/null || true
+            else
+              echo "ECR repo exists: $repo"
+            fi
+          }
+      
+          ensure_repo "sbeacon-prod-analytics-lambda-containers"
+          ensure_repo "sbeacon-prod-askbeacon-lambda-containers"
+      
+      - name: Promote image manifest from STAGING -> PROD and tag as stable
         shell: bash
         run: |
           set -euo pipefail
           RC="${{ steps.ver.outputs.rc }}"
           STABLE="${{ steps.ver.outputs.stable }}"
-          REGION="${{ vars.AWS_REGION || 'ap-southeast-2' }}"
-
-          retag() {
-            local repo="$1"
-            local manifest
+          SRC_ENV="staging"
+          DST_ENV="prod"
+      
+          copy_tag () {
+            local svc="$1"
+            local src="sbeacon-${SRC_ENV}-${svc}-lambda-containers"
+            local dst="sbeacon-${DST_ENV}-${svc}-lambda-containers"
+      
             manifest="$(aws ecr batch-get-image \
-              --repository-name "$repo" \
+              --repository-name "$src" \
               --image-ids imageTag="$RC" \
+              --accepted-media-types application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json \
               --query 'images[0].imageManifest' --output text)"
+      
             if [ -z "$manifest" ] || [ "$manifest" = "None" ]; then
-              echo "::error::Image for $repo:$RC not found."; exit 1
+              echo "::error::Image not found: $src:$RC"; exit 1
             fi
+      
             aws ecr put-image \
-              --repository-name "$repo" \
+              --repository-name "$dst" \
               --image-tag "$STABLE" \
               --image-manifest "$manifest" >/dev/null
-            echo "Retagged $repo:$RC -> $STABLE"
+      
+            echo "Promoted $src:$RC  ->  $dst:$STABLE"
           }
-
-          WORKSPACE="prod"
-          retag "sbeacon-${WORKSPACE}-analytics-lambda-containers"
-          retag "sbeacon-${WORKSPACE}-askbeacon-lambda-containers"
-
+      
+          copy_tag analytics
+          copy_tag askbeacon
       - name: Create stable Git tag pointing to RC commit
         run: |
           git config user.name  "${GITHUB_ACTOR}"
