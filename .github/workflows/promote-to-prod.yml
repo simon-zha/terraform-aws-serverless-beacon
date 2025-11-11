@@ -1,5 +1,4 @@
 # .github/workflows/promote-to-prod.yml
-#Upgrade vX.Y.Z-rc.N to stable version vX.Y.Z, retag the ECR image from the same digest to stable version, and create a GitHub Release.
 name: Promote RC to Stable & Release
 
 on:
@@ -15,8 +14,8 @@ on:
         type: string
 
 permissions:
-  contents: write   
-  id-token: write   
+  contents: write
+  id-token: write
   pull-requests: read
 
 concurrency:
@@ -26,6 +25,8 @@ concurrency:
 jobs:
   promote:
     runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
 
     steps:
       - name: Checkout
@@ -44,8 +45,12 @@ jobs:
           fi
 
           BASE="${RC%-rc.*}"
-          STABLE="${{ inputs.stable_tag || '' }}"
-          if [ -z "$STABLE" ]; then STABLE="$BASE"; fi
+          STABLE_INPUT="${{ inputs.stable_tag || '' }}"
+          if [ -n "$STABLE_INPUT" ]; then
+            STABLE="$STABLE_INPUT"
+          else
+            STABLE="$BASE"
+          fi
 
           git fetch --tags --force
           SHA="$(git rev-list -n 1 "$RC")" || { echo "::error::RC tag not found in git."; exit 1; }
@@ -62,14 +67,14 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Ensure prod ECR repos (create if missing)
         shell: bash
         run: |
           set -euo pipefail
-          REGION="${{ vars.AWS_REGION || 'ap-southeast-2' }}"
-      
+          REGION="${AWS_REGION}"
+
           ensure_repo () {
             local repo="$1"
             if ! aws ecr describe-repositories --repository-names "$repo" --region "$REGION" >/dev/null 2>&1; then
@@ -79,7 +84,6 @@ jobs:
                 --region "$REGION" \
                 --image-scanning-configuration scanOnPush=true \
                 --image-tag-mutability MUTABLE >/dev/null
-      
               aws ecr put-lifecycle-policy \
                 --repository-name "$repo" \
                 --lifecycle-policy-text '{
@@ -102,44 +106,78 @@ jobs:
               echo "ECR repo exists: $repo"
             fi
           }
-      
+
           ensure_repo "sbeacon-prod-analytics-lambda-containers"
           ensure_repo "sbeacon-prod-askbeacon-lambda-containers"
-      
-      - name: Promote image manifest from STAGING -> PROD and tag as stable
+
+      - name: ECR Login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Copy images STAGING -> PROD via pull/tag/push (no rebuild)
+        id: copy
         shell: bash
         run: |
           set -euo pipefail
           RC="${{ steps.ver.outputs.rc }}"
           STABLE="${{ steps.ver.outputs.stable }}"
-          SRC_ENV="staging"
-          DST_ENV="prod"
-      
-          copy_tag () {
+
+          ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
+          REG="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+          copy_image () {
             local svc="$1"
-            local src="sbeacon-${SRC_ENV}-${svc}-lambda-containers"
-            local dst="sbeacon-${DST_ENV}-${svc}-lambda-containers"
-      
-            manifest="$(aws ecr batch-get-image \
-              --repository-name "$src" \
-              --image-ids imageTag="$RC" \
-              --accepted-media-types application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json \
-              --query 'images[0].imageManifest' --output text)"
-      
-            if [ -z "$manifest" ] || [ "$manifest" = "None" ]; then
-              echo "::error::Image not found: $src:$RC"; exit 1
-            fi
-      
-            aws ecr put-image \
-              --repository-name "$dst" \
-              --image-tag "$STABLE" \
-              --image-manifest "$manifest" >/dev/null
-      
-            echo "Promoted $src:$RC  ->  $dst:$STABLE"
+            local SRC="${REG}/sbeacon-staging-${svc}-lambda-containers:${RC}"
+            local DST="${REG}/sbeacon-prod-${svc}-lambda-containers:${STABLE}"
+
+            echo "Pull  ${SRC}"
+            docker pull "${SRC}"
+
+            echo "Tag   ${SRC} -> ${DST}"
+            docker tag "${SRC}" "${DST}"
+
+            echo "Push  ${DST}"
+            docker push "${DST}"
           }
-      
-          copy_tag analytics
-          copy_tag askbeacon
+
+          copy_image analytics
+          copy_image askbeacon
+
+          echo "registry=${REG}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve PROD digests for the stable tag
+        id: digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          STABLE="${{ steps.ver.outputs.stable }}"
+          ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
+          REG="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+          get_digest () {
+            local repo="$1"
+            aws ecr describe-images \
+              --repository-name "$repo" \
+              --image-ids imageTag="$STABLE" \
+              --query 'imageDetails[0].imageDigest' --output text
+          }
+
+          A_REPO="sbeacon-prod-analytics-lambda-containers"
+          B_REPO="sbeacon-prod-askbeacon-lambda-containers"
+
+          A_DIGEST="$(get_digest "$A_REPO")"
+          B_DIGEST="$(get_digest "$B_REPO")"
+
+          if [ -z "$A_DIGEST" ] || [ "$A_DIGEST" = "None" ]; then
+            echo "::error::analytics image not found for tag $STABLE in PROD"; exit 1
+          fi
+          if [ -z "$B_DIGEST" ] || [ "$B_DIGEST" = "None" ]; then
+            echo "::error::askbeacon image not found for tag $STABLE in PROD"; exit 1
+          fi
+
+          echo "registry=$REG"              >> "$GITHUB_OUTPUT"
+          echo "analytics_digest=$A_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "askbeacon_digest=$B_DIGEST" >> "$GITHUB_OUTPUT"
+
       - name: Create stable Git tag pointing to RC commit
         run: |
           git config user.name  "${GITHUB_ACTOR}"
@@ -158,3 +196,10 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Post summary
+        run: |
+          echo "### Promoted \`${{ steps.ver.outputs.rc }}\` → **${{ steps.ver.outputs.stable }}**" >> $GITHUB_STEP_SUMMARY
+          echo "- Registry: \`${{ steps.digests.outputs.registry }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Analytics: \`sbeacon-prod-analytics-lambda-containers@${{ steps.digests.outputs.analytics_digest }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- AskBeacon: \`sbeacon-prod-askbeacon-lambda-containers@${{ steps.digests.outputs.askbeacon_digest }}\`" >> $GITHUB_STEP_SUMMARY
