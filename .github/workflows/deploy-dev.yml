@@ -209,10 +209,10 @@ jobs:
       - name: Attach analytics report to summary
         if: always() && steps.scan_analytics.outcome != 'skipped'
         run: |
-          echo 'Analytics Image Trivy Reports: )' >> $GITHUB_STEP_SUMMARY
-          echo '***' >> $GITHUB_STEP_SUMMARY
+          echo '### Analytics Image Trivy Reports: ' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
           tail -n 200 trivy-analytics.txt >> $GITHUB_STEP_SUMMARY # Last 200 records
-          echo '***' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Upload analytics report artifact
         if: always() && steps.scan_analytics.outcome != 'skipped'
@@ -248,10 +248,10 @@ jobs:
       - name: Attach askbeacon report to summary
         if: always() && steps.scan_askbeacon.outcome != 'skipped'
         run: |
-          echo 'Askbeacon Image Trivy Reports: ' >> $GITHUB_STEP_SUMMARY
-          echo '***' >> $GITHUB_STEP_SUMMARY
+          echo '### Askbeacon Image Trivy Reports: ' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
           tail -n 200 trivy-askbeacon.txt >> $GITHUB_STEP_SUMMARY
-          echo '***' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Upload askbeacon report artifact
         if: always() && steps.scan_askbeacon.outcome != 'skipped'
