@@ -192,24 +192,33 @@ jobs:
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache-new
 
-      - name: Scan analytics image with Trivy # Fail on HIGH/CRITICAL
+      - name: Scan analytics image with Trivy (fail on HIGH/CRITICAL)
         id: scan_analytics
         uses: aquasecurity/trivy-action@0.24.0
         with:
           image-ref: ${{ steps.ecr.outputs.registry }}/sbeacon-${{ env.TARGET_WORKSPACE }}-analytics-lambda-containers:${{ env.IMAGE_TAG }}
-          format: 'sarif'
-          output: 'trivy-analytics.sarif'
+          format: 'table'
+          output: 'trivy-analytics.txt'
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
-          exit-code: '1'        # Stop develop when critical
+          exit-code: '1'
           ignore-unfixed: true
           timeout: '10m'
 
-      - name: Upload analytics scan SARIF
+      - name: Attach analytics report to summary
         if: always() && steps.scan_analytics.outcome != 'skipped'
-        uses: github/codeql-action/upload-sarif@v3
+        run: |
+          echo '### Trivy report (analytics)' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -n 200 trivy-analytics.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload analytics report artifact
+        if: always() && steps.scan_analytics.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
         with:
-          sarif_file: 'trivy-analytics.sarif'
+          name: trivy-analytics-${{ github.run_id }}
+          path: trivy-analytics.txt
 
       - name: Build & Push askbeacon image
         uses: docker/build-push-action@v6
@@ -221,24 +230,33 @@ jobs:
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache-new
 
-      - name: Scan askbeacon image with Trivy # Fail on HIGH/CRITICAL
+      - name: Scan askbeacon image with Trivy (fail on HIGH/CRITICAL)
         id: scan_askbeacon
         uses: aquasecurity/trivy-action@0.24.0
         with:
           image-ref: ${{ steps.ecr.outputs.registry }}/sbeacon-${{ env.TARGET_WORKSPACE }}-askbeacon-lambda-containers:${{ env.IMAGE_TAG }}
-          format: 'sarif'
-          output: 'trivy-askbeacon.sarif'
+          format: 'table'
+          output: 'trivy-askbeacon.txt'
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
           exit-code: '1'
           ignore-unfixed: true
           timeout: '10m'
 
-      - name: Upload askbeacon scan SARIF
+      - name: Attach askbeacon report to summary
         if: always() && steps.scan_askbeacon.outcome != 'skipped'
-        uses: github/codeql-action/upload-sarif@v3
+        run: |
+          echo '### Trivy report (askbeacon)' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -n 200 trivy-askbeacon.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload askbeacon report artifact
+        if: always() && steps.scan_askbeacon.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
         with:
-          sarif_file: 'trivy-askbeacon.sarif'
+          name: trivy-askbeacon-${{ github.run_id }}
+          path: trivy-askbeacon.txt
 
       - name: Move layer cache
         run: |
