@@ -1,3 +1,3 @@
-Manual develop deployment has been temporarily removed for testing of the automatic environment controller.
-This file is used to trigger the develop workflow.
-Now it's running well, will keep on working these.
+Each branch workflow is now independent
+Use a corresponding isolation environment.
+Do not change the structure before final release.
