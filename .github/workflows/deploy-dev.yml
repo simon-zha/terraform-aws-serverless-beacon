@@ -30,6 +30,8 @@ on:
 permissions:
   contents: read
   id-token: write
+  security-events: write # Upload security scan result to Code Scanning
+  actions: read
 
 concurrency:
   group: terraform-${{ github.workflow }}-${{ github.ref_name }}
@@ -190,6 +192,35 @@ jobs:
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache-new
 
+      - name: Scan analytics image with Trivy (It should fail on HIGH/CRITICAL)
+        id: scan_analytics
+        continue-on-error: true           # Allow run next image vul scan
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ${{ steps.ecr.outputs.registry }}/sbeacon-${{ env.TARGET_WORKSPACE }}-analytics-lambda-containers:${{ env.IMAGE_TAG }}
+          format: 'table'
+          output: 'trivy-analytics.txt'
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'   # Warning: Now Image with vuls can be deployed, change to "1" after testing !!! 
+          ignore-unfixed: true
+          timeout: '10m'
+
+      - name: Attach analytics report to summary
+        if: always() && steps.scan_analytics.outcome != 'skipped'
+        run: |
+          echo '### Analytics Image Trivy Reports: ' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -n 200 trivy-analytics.txt >> $GITHUB_STEP_SUMMARY # Last 200 records
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload analytics report artifact
+        if: always() && steps.scan_analytics.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-analytics-${{ github.run_id }}
+          path: trivy-analytics.txt
+
       - name: Build & Push askbeacon image
         uses: docker/build-push-action@v6
         with:
@@ -199,6 +230,46 @@ jobs:
             ${{ steps.ecr.outputs.registry }}/sbeacon-${{ env.TARGET_WORKSPACE }}-askbeacon-lambda-containers:${{ env.IMAGE_TAG }}
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache-new
+
+      - name: Scan askbeacon image with Trivy (It should fail on HIGH/CRITICAL)
+        id: scan_askbeacon
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ${{ steps.ecr.outputs.registry }}/sbeacon-${{ env.TARGET_WORKSPACE }}-askbeacon-lambda-containers:${{ env.IMAGE_TAG }}
+          format: 'table'
+          output: 'trivy-askbeacon.txt'
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0' # Warning: Now Image with vuls can be deployed, change to "1" after testing !!! 
+          ignore-unfixed: true
+          timeout: '10m'
+
+      - name: Attach askbeacon report to summary
+        if: always() && steps.scan_askbeacon.outcome != 'skipped'
+        run: |
+          echo '### Askbeacon Image Trivy Reports: ' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -n 200 trivy-askbeacon.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload askbeacon report artifact
+        if: always() && steps.scan_askbeacon.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-askbeacon-${{ github.run_id }}
+          path: trivy-askbeacon.txt
+
+      - name: Gate - It should fail if any image on HIGH/CRITICAL
+        if: always()
+        run: |
+          a="${{ steps.scan_analytics.outcome }}"
+          b="${{ steps.scan_askbeacon.outcome }}"
+          echo "analytics=${a}, askbeacon=${b}"
+          if [ "$a" = "failure" ] || [ "$b" = "failure" ]; then
+            echo "::error::HIGH/CRITICAL Vulnerabilities Alerts."
+            exit 1
+          fi
 
       - name: Move layer cache
         run: |
