@@ -16,6 +16,7 @@ permissions:
   id-token: write
   issues: write
   pull-requests: write
+  security-events: write # Upload security scan result to Code Scanning
 
 concurrency:
   group: production-deploy
@@ -244,6 +245,40 @@ jobs:
 
       - name: Terraform Validate
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} validate
+
+      - name: IaC scan (Terraform) with Trivy config
+        id: trivy_iac
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type: 'config'
+          scan-ref: './environments'
+          format: 'table'
+          output: 'trivy-iac.txt'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0' # Warning: Now IaC with vuls can be deployed, change to "1" after testing !!! 
+          timeout: '5m'
+
+      - name: Attach IaC scan to summary
+        if: always() && steps.trivy_iac.outcome != 'skipped'
+        run: |
+          echo '### Trivy IaC (Terraform) report' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -n 200 trivy-iac.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload IaC report artifact
+        if: always() && steps.trivy_iac.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-iac-${{ github.run_id }}
+          path: trivy-iac.txt
+
+      - name: Gate - It should fail if IaC has HIGH/CRITICAL
+        if: ${{ steps.trivy_iac.outcome == 'failure' }}
+        run: |
+          echo "::error::Trivy IaC scan found HIGH/CRITICAL."
+          exit 1
 
       - name: Terraform Plan
         id: plan

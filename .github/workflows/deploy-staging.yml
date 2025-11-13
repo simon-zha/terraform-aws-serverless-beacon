@@ -11,6 +11,7 @@ permissions:
   id-token: write
   issues: write
   pull-requests: write
+  security-events: write # Upload security scan result to Code Scanning
 
 concurrency:
   group: staging-deploy
@@ -198,6 +199,35 @@ jobs:
             ${{ steps.ecr.outputs.registry }}/sbeacon-staging-analytics-lambda-containers:gh-${{ github.sha }}
             ${{ steps.ecr.outputs.registry }}/sbeacon-staging-analytics-lambda-containers:${{ steps.ver.outputs.tag }}
 
+      - name: Scan analytics image with Trivy (It should fail on HIGH/CRITICAL)
+        id: scan_analytics
+        continue-on-error: true           # Allow run next image vul scan
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ${{ steps.ecr.outputs.registry }}/sbeacon-${{ env.TARGET_WORKSPACE }}-analytics-lambda-containers:${{ env.IMAGE_TAG }}
+          format: 'table'
+          output: 'trivy-analytics.txt'
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'   # Warning: Now Image with vuls can be deployed, change to "1" after testing !!! 
+          ignore-unfixed: true
+          timeout: '10m'
+
+      - name: Attach analytics report to summary
+        if: always() && steps.scan_analytics.outcome != 'skipped'
+        run: |
+          echo '### Analytics Image Trivy Reports: ' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -n 200 trivy-analytics.txt >> $GITHUB_STEP_SUMMARY # Last 200 records
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload analytics report artifact
+        if: always() && steps.scan_analytics.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-analytics-${{ github.run_id }}
+          path: trivy-analytics.txt
+
       - name: Build & Push askbeacon image
         uses: docker/build-push-action@v6
         with:
@@ -206,6 +236,46 @@ jobs:
           tags: |
             ${{ steps.ecr.outputs.registry }}/sbeacon-staging-askbeacon-lambda-containers:gh-${{ github.sha }}
             ${{ steps.ecr.outputs.registry }}/sbeacon-staging-askbeacon-lambda-containers:${{ steps.ver.outputs.tag }}
+
+      - name: Scan askbeacon image with Trivy (It should fail on HIGH/CRITICAL)
+        id: scan_askbeacon
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ${{ steps.ecr.outputs.registry }}/sbeacon-${{ env.TARGET_WORKSPACE }}-askbeacon-lambda-containers:${{ env.IMAGE_TAG }}
+          format: 'table'
+          output: 'trivy-askbeacon.txt'
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0' # Warning: Now Image with vuls can be deployed, change to "1" after testing !!! 
+          ignore-unfixed: true
+          timeout: '10m'
+
+      - name: Attach askbeacon report to summary
+        if: always() && steps.scan_askbeacon.outcome != 'skipped'
+        run: |
+          echo '### Askbeacon Image Trivy Reports: ' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -n 200 trivy-askbeacon.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload askbeacon report artifact
+        if: always() && steps.scan_askbeacon.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-askbeacon-${{ github.run_id }}
+          path: trivy-askbeacon.txt
+
+      - name: Gate - It should fail if any image on HIGH/CRITICAL
+        if: always()
+        run: |
+          a="${{ steps.scan_analytics.outcome }}"
+          b="${{ steps.scan_askbeacon.outcome }}"
+          echo "analytics=${a}, askbeacon=${b}"
+          if [ "$a" = "failure" ] || [ "$b" = "failure" ]; then
+            echo "::error::HIGH/CRITICAL Vulnerabilities Alerts."
+            exit 1
+          fi
 
       - name: Resolve ECR digests for RC tag
         id: digests
@@ -253,6 +323,40 @@ jobs:
 
       - name: Terraform Validate
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} validate
+
+      - name: IaC scan (Terraform) with Trivy config
+        id: trivy_iac
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type: 'config'
+          scan-ref: './environments'
+          format: 'table'
+          output: 'trivy-iac.txt'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0' # Warning: Now IaC with vuls can be deployed, change to "1" after testing !!! 
+          timeout: '5m'
+
+      - name: Attach IaC scan to summary
+        if: always() && steps.trivy_iac.outcome != 'skipped'
+        run: |
+          echo '### Trivy IaC (Terraform) report' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -n 200 trivy-iac.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload IaC report artifact
+        if: always() && steps.trivy_iac.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-iac-${{ github.run_id }}
+          path: trivy-iac.txt
+
+      - name: Gate - It should fail if IaC has HIGH/CRITICAL
+        if: ${{ steps.trivy_iac.outcome == 'failure' }}
+        run: |
+          echo "::error::Trivy IaC scan found HIGH/CRITICAL."
+          exit 1
 
       - name: Terraform Plan
         id: plan
