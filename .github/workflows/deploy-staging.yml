@@ -204,7 +204,7 @@ jobs:
         continue-on-error: true           # Allow run next image vul scan
         uses: aquasecurity/trivy-action@0.24.0
         with:
-          image-ref: ${{ steps.ecr.outputs.registry }}/sbeacon-${{ env.TARGET_WORKSPACE }}-analytics-lambda-containers:${{ env.IMAGE_TAG }}
+          image-ref: ${{ steps.ecr.outputs.registry }}/sbeacon-staging-analytics-lambda-containers:gh-${{ github.sha }}
           format: 'table'
           output: 'trivy-analytics.txt'
           vuln-type: 'os,library'
@@ -242,7 +242,7 @@ jobs:
         continue-on-error: true
         uses: aquasecurity/trivy-action@0.24.0
         with:
-          image-ref: ${{ steps.ecr.outputs.registry }}/sbeacon-${{ env.TARGET_WORKSPACE }}-askbeacon-lambda-containers:${{ env.IMAGE_TAG }}
+          image-ref: ${{ steps.ecr.outputs.registry }}/sbeacon-staging-askbeacon-lambda-containers:gh-${{ github.sha }}
           format: 'table'
           output: 'trivy-askbeacon.txt'
           vuln-type: 'os,library'
