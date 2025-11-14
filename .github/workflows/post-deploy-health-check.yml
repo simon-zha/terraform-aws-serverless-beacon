@@ -15,11 +15,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download post-deploy artifact
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v3.0.0
         with:
           name: post-deploy-info-${{ github.event.workflow_run.id }}
           path: post_deploy_info
-          run-id: ${{ github.event.workflow_run.id }}
 
       - name: Read API URL
         id: read_url
@@ -46,3 +45,22 @@ jobs:
       - name: Run health check
         run: |
           python scripts/health_check.py --url "${{ steps.read_url.outputs.api_url }}" --retries 6 --timeout 8 --backoff 2
+
+      - name: Create issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const title = `Health check failed: ${context.repo.owner}/${context.repo.repo}`;
+            const body = `Health check failed for URL: ${{ steps.read_url.outputs.api_url }}\n\n` +
+              `Actions run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\n` +
+              `Please investigate. Logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
+            // Check for existing open issue with same title
+            const issues = await github.rest.issues.listForRepo({ owner: context.repo.owner, repo: context.repo.repo, state: 'open', per_page: 100 });
+            const exists = issues.data.find(i => i.title === title);
+            if (exists) {
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: exists.number, body: `Health check failed again. See run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}` });
+            } else {
+              await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body, labels: ['health-check','automated'] });
+            }
