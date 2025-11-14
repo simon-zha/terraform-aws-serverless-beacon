@@ -21,6 +21,7 @@ jobs:
           name: post-deploy-info
           path: post_deploy_info
           run-id: ${{ github.event.workflow_run.id }}
+          repository: ${{ github.event.workflow_run.repository.full_name }}
 
       - name: Read API URL
         id: read_url
