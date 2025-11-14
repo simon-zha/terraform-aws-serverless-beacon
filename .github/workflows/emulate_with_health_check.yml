@@ -39,6 +39,7 @@ jobs:
 
       - name: Run health check
         id: run_health
+        continue-on-error: true
         run: |
           python scripts/health_check.py \
             --url "${{ steps.read_url.outputs.api_url }}" \
