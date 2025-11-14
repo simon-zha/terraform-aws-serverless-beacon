@@ -4,11 +4,9 @@ FROM --platform=x86_64 public.ecr.aws/lambda/python:3.12
 COPY requirements.txt ${LAMBDA_TASK_ROOT}
 
 # TODO remove after replacing pyorc with PyArrow
-RUN dnf install -y gcc gcc-c++ cmake
-
-# Install the specified packages
-RUN pip install --upgrade pip
-RUN pip install -r requirements.txt
+RUN dnf install -y gcc gcc-c++ cmake \
+&& pip install --upgrade pip \
+&& pip install -r requirements.txt
 
 
 # Copy function code
