@@ -23,5 +23,5 @@ jobs:
       - name: Upload post-deploy info
         uses: actions/upload-artifact@v4
         with:
-          name: post-deploy-info-${{ github.run_id }}
+          name: post-deploy-info
           path: post_deploy_info.txt

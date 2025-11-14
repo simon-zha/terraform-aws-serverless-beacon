@@ -18,7 +18,7 @@ jobs:
       - name: Download post-deploy artifact
         uses: actions/download-artifact@v4
         with:
-          name: post-deploy-info-${{ github.event.workflow_run.id }}
+          name: post-deploy-info
           path: post_deploy_info
           run-id: ${{ github.event.workflow_run.id }}
 
