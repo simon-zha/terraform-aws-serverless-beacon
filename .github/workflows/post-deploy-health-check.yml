@@ -6,6 +6,7 @@ on:
       - "Deploy Dev Environment"
       - "Deploy Staging Environment"
       - "Deploy Production Environment"
+      - "Emulate Deploy Dev Environment"
     types:
       - completed
 
@@ -43,11 +44,12 @@ jobs:
           python-version: '3.12'
 
       - name: Run health check
+        id: run_health
         run: |
           python scripts/health_check.py --url "${{ steps.read_url.outputs.api_url }}" --retries 6 --timeout 8 --backoff 2
 
       - name: Create issue on failure
-        if: failure()
+        if: ${{ steps.run_health.outcome == 'failure' }}
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}

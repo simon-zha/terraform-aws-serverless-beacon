@@ -6,7 +6,8 @@ on:
       test_url:
         description: 'Health check URL to upload as post-deploy info'
         required: false
-        default: 'https://example.com'
+        # default to an invalid host to force health-check failure when testing
+        default: 'https://example.invalid'
 
 jobs:
   emulate_deploy:
