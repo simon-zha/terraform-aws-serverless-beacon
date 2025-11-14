@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download post-deploy artifact
-        uses: actions/download-artifact@v3.0.0
+        uses: actions/download-artifact@v4
         with:
           name: post-deploy-info-${{ github.event.workflow_run.id }}
           path: post_deploy_info
