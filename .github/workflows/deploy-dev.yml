@@ -457,18 +457,29 @@ jobs:
       - name: Terraform Apply
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} apply -input=false -lock-timeout=10m -auto-approve tfplan
 
+      - name: Refresh Terraform State
+        if: env.TF_DESTROY_FLAG != 'true'
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} refresh -input=false || true
+
       - name: Publish API URL
         if: env.TF_DESTROY_FLAG != 'true'
         shell: bash
         run: |
           set -euo pipefail
+          # Wait a moment for state to be fully updated
+          sleep 2
+          
           # Get JSON output, capturing stderr separately for error messages
           json_output=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -json api_url 2>/dev/null) || {
             error_output=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -json api_url 2>&1 || true)
             echo "::error::Failed to get terraform output 'api_url'. Output may not exist yet."
             echo "Error output: ${error_output}"
+            echo "Checking terraform state..."
+            terraform -chdir=${{ env.TF_WORKING_DIR }} state list 2>&1 || true
             echo "Attempting to list all outputs:"
             terraform -chdir=${{ env.TF_WORKING_DIR }} output 2>&1 || true
+            echo "Checking if apply was successful..."
+            terraform -chdir=${{ env.TF_WORKING_DIR }} show 2>&1 | head -20 || true
             exit 1
           }
           
