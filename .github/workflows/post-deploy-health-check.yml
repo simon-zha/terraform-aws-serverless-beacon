@@ -1,70 +1,216 @@
-name: Post-deploy Health Check
+# .github/workflows/post-deploy-health-check.yml
+name: post-deploy-health-check
 
 on:
   workflow_run:
     workflows:
-      - "Deploy Dev Environment"
-      - "Deploy Staging Environment"
-      - "Deploy Production Environment"
-      - "Emulate Deploy Dev Environment"
+      - deploy-dev
+      - deploy-staging
+      - deploy_prod
+      - deploy-hotfix
     types:
       - completed
 
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+  issues: write
+
 jobs:
-  health_check:
+  health:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Download post-deploy artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: post-deploy-info
-          path: post_deploy_info
-          run-id: ${{ github.event.workflow_run.id }}
-          repository: ${{ github.event.workflow_run.repository.full_name }}
-
-      - name: Read API URL
-        id: read_url
+      - name: Determine target workspace
+        id: target
         run: |
           set -euo pipefail
-          if [ -f post_deploy_info/post_deploy_info.txt ]; then
-            url=$(cat post_deploy_info/post_deploy_info.txt)
-          elif [ -f post_deploy_info/post_deploy_info.json ]; then
-            url=$(cat post_deploy_info/post_deploy_info.json)
-          else
-            # try any file in the folder
-            url=$(ls post_deploy_info | head -n1 | xargs -I{} cat post_deploy_info/{})
-          fi
-          echo "api_url=${url}" >> $GITHUB_OUTPUT
+          workflow="${{ github.event.workflow.name }}"
+          branch="${{ github.event.workflow_run.head_branch }}"
+          case "${workflow}" in
+            "deploy-dev")
+              env_name="dev"
+              workspace="dev"
+              backend="backend-dev.hcl"
+              ;;
+            "deploy-staging")
+              env_name="staging"
+              workspace="staging"
+              backend="backend-staging.hcl"
+              ;;
+            "deploy_prod")
+              env_name="prod"
+              workspace="prod"
+              backend="backend-prod.hcl"
+              ;;
+            "deploy-hotfix")
+              env_name="hotfix"
+              if [ -n "${branch}" ]; then
+                normalized=$(echo "${branch}" | tr '[:upper:]' '[:lower:]' | sed -E 's#[^a-z0-9-]#-#g' | sed -E 's#-+#-#g' | sed -E 's#(^-|-$)##g')
+              else
+                normalized="hotfix-${{ github.event.workflow_run.id }}"
+              fi
+              workspace="${normalized}"
+              backend="backend-staging.hcl"
+              ;;
+            *)
+              echo "::error::Unknown workflow ${workflow}"
+              exit 1
+              ;;
+          esac
+          echo "environment=${env_name}" >> "$GITHUB_OUTPUT"
+          echo "workspace=${workspace}" >> "$GITHUB_OUTPUT"
+          echo "backend=${backend}" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.4
+
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Run health check
-        id: run_health
-        run: |
-          python scripts/health_check.py --url "${{ steps.read_url.outputs.api_url }}" --retries 6 --timeout 8 --backoff 2
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
 
-      - name: Create issue on failure
-        if: ${{ steps.run_health.outcome == 'failure' }}
+      - name: Resolve API URL
+        id: url
+        run: |
+          set -euo pipefail
+          workspace="${{ steps.target.outputs.workspace }}"
+          parameter="/serverless-beacon/${workspace}/api_url"
+          tmp_err="$(mktemp)"
+          url=$(aws ssm get-parameter \
+            --name "${parameter}" \
+            --with-decryption \
+            --region "${{ vars.AWS_REGION || 'ap-southeast-2' }}" \
+            --query 'Parameter.Value' \
+            --output text 2>"${tmp_err}" || true)
+          if [ "${url}" = "None" ] || [ -z "${url}" ]; then
+            echo "::error::Unable to resolve API URL from SSM parameter ${parameter}"
+            if [ -s "${tmp_err}" ]; then
+              echo "--- aws ssm get-parameter output ---"
+              cat "${tmp_err}"
+              echo "------------------------------------"
+            fi
+            rm -f "${tmp_err}"
+            exit 1
+          fi
+          rm -f "${tmp_err}"
+          echo "url=${url}" >> "$GITHUB_OUTPUT"
+
+      - name: Obtain Cognito token
+        id: cognito
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          backend="${{ steps.target.outputs.backend }}"
+          workspace="${{ steps.target.outputs.workspace }}"
+          terraform -chdir=environments init -input=false -upgrade -backend-config="${backend}" >/dev/null
+          if ! terraform -chdir=environments workspace select "${workspace}" >/dev/null; then
+            echo "Workspace ${workspace} not found; skipping token acquisition." >&2
+            exit 0
+          fi
+          login_cmd=$(terraform -chdir=environments output -raw admin_login_command 2>/dev/null || echo "N/A")
+          if [ "${login_cmd}" = "N/A" ]; then
+            exit 0
+          fi
+          token=$(eval "${login_cmd}")
+          token=$(echo "${token}" | tr -d '"')
+          if [ -z "${token}" ]; then
+            echo "Token acquisition returned empty string" >&2
+            exit 1
+          fi
+          echo "token=${token}" >> "$GITHUB_OUTPUT"
+
+      - name: Run health check
+        id: health
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          EXTRA=()
+          if [ "${{ steps.cognito.outcome }}" = "success" ] && [ -n "${{ steps.cognito.outputs.token }}" ]; then
+            EXTRA+=(--bearer-token "${{ steps.cognito.outputs.token }}")
+          fi
+          python scripts/health_check.py \
+            --url "${{ steps.url.outputs.url }}" \
+            --expected-status 200 \
+            --retries 5 \
+            --timeout 10 \
+            --backoff 2 \
+            "${EXTRA[@]}"
+
+      - name: Open issue on failure
+        if: steps.health.outcome == 'failure'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const title = `Health check failed: ${context.repo.owner}/${context.repo.repo}`;
-            const body = `Health check failed for URL: ${{ steps.read_url.outputs.api_url }}\n\n` +
-              `Actions run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\n` +
-              `Please investigate. Logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
-            // Check for existing open issue with same title
-            const issues = await github.rest.issues.listForRepo({ owner: context.repo.owner, repo: context.repo.repo, state: 'open', per_page: 100 });
-            const exists = issues.data.find(i => i.title === title);
-            if (exists) {
-              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: exists.number, body: `Health check failed again. See run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}` });
+            const envName = '${{ steps.target.outputs.environment }}';
+            const workspace = '${{ steps.target.outputs.workspace }}';
+            const apiUrl = '${{ steps.url.outputs.url }}';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const title = `Post-deploy health check failed: ${envName} (${workspace})`;
+            const body = [
+              `Environment: **${envName}**`,
+              `Workspace: \`${workspace}\``,
+              `URL: ${apiUrl}`,
+              `Triggered by: ${context.eventName} (${context.payload.workflow_run.name})`,
+              `Workflow run: ${runUrl}`,
+              '',
+              'Please investigate the failure.'
+            ].join('\n');
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'health-check',
+              per_page: 100
+            });
+            const existing = issues.find(issue => issue.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: `Health check failed again. See run: ${runUrl}`
+              });
             } else {
-              await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body, labels: ['health-check','automated'] });
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['health-check','automated']
+              });
             }
+            core.setFailed(`Health check failed for ${envName} (${workspace})`);
+
+      - name: Append summary
+        if: always()
+        run: |
+          status="${{ steps.health.outcome }}"
+          if [ "${status}" = "success" ]; then
+            label="[PASS]"
+          elif [ "${status}" = "skipped" ]; then
+            label="[SKIP]"
+          else
+            label="[FAIL]"
+          fi
+          {
+            echo "### ${label} - ${{ steps.target.outputs.environment }} (${{
+              steps.target.outputs.workspace
+            }})"
+            echo "- URL: ${{ steps.url.outputs.url }}"
+            echo "- Trigger: ${{ github.event.workflow.name }} run #${{ github.event.workflow_run.run_number }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
