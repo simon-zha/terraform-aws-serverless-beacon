@@ -30,6 +30,7 @@ on:
 permissions:
   contents: read
   actions: read
+  id-token: write
   issues: write
 
 jobs:
@@ -42,19 +43,22 @@ jobs:
         include:
           - environment_name: dev
             github_environment: dev
-            api_var: DEV_API_URL
-            api_url: ${{ vars.DEV_API_URL }}
+            workspace: dev
+            ssm_parameter: /serverless-beacon/dev/api_url
           - environment_name: staging
             github_environment: staging
-            api_var: STAGING_API_URL
-            api_url: ${{ vars.STAGING_API_URL }}
+            workspace: staging
+            ssm_parameter: /serverless-beacon/staging/api_url
           - environment_name: prod
             github_environment: prod
-            api_var: PROD_API_URL
-            api_url: ${{ vars.PROD_API_URL }}
+            workspace: prod
+            ssm_parameter: /serverless-beacon/prod/api_url
     environment: ${{ matrix.github_environment }}
     env:
       ENV_NAME: ${{ matrix.environment_name }}
+      WORKSPACE: ${{ matrix.workspace }}
+      SSM_PARAMETER: ${{ matrix.ssm_parameter }}
+      API_URL: ""
       EXPECTED_STATUS: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.expected_status) || '200' }}
       RETRIES: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.retries) || '6' }}
       TIMEOUT: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.timeout) || '8' }}
@@ -70,6 +74,24 @@ jobs:
         if: env.SHOULD_RUN != 'true'
         run: echo "Skipping ${ENV_NAME} health check because it was not selected."
 
+      - name: Validate Cognito configuration
+        if: env.SHOULD_RUN == 'true'
+        run: |
+          if [ -n "${COGNITO_USER_POOL_ID}" ] && [ -z "${COGNITO_APP_CLIENT_ID}" ]; then
+            echo "::error::COGNITO_USER_POOL_ID is set but COGNITO_APP_CLIENT_ID is missing."
+            exit 1
+          fi
+          if [ -n "${COGNITO_APP_CLIENT_ID}" ] && [ -z "${COGNITO_USER_POOL_ID}" ]; then
+            echo "::error::COGNITO_APP_CLIENT_ID is set but COGNITO_USER_POOL_ID is missing."
+            exit 1
+          fi
+          if [ -n "${COGNITO_USER_POOL_ID}" ] || [ -n "${COGNITO_APP_CLIENT_ID}" ]; then
+            if [ -z "${COGNITO_USERNAME}" ] || [ -z "${COGNITO_PASSWORD}" ]; then
+              echo "::error::Cognito authentication requested but username/password secrets are missing."
+              exit 1
+            fi
+          fi
+
       - name: Checkout repository
         if: env.SHOULD_RUN == 'true'
         uses: actions/checkout@v4
@@ -81,107 +103,36 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Discover API endpoint
+      - name: Resolve API URL
         if: env.SHOULD_RUN == 'true'
-        id: discover_api
-        shell: bash
         run: |
           set -euo pipefail
-          ENVIRONMENT="${ENV_NAME}"
-          REGION="${AWS_REGION}"
-
-          API_ID=""
-          STAGE_NAME=""
-          BASE_PATH=""
-          BASE_DOMAIN=""
-
-          # Try API Gateway v2 (HTTP/WebSocket APIs)
-          API_ID=$(aws apigatewayv2 get-apis \
-            --query "Items[?tags.environment=='${ENVIRONMENT}'].ApiId" \
-            --output text || true)
-          API_ID=$(echo "${API_ID}" | tr ' ' '\n' | head -n1)
-
-          if [ -n "${API_ID}" ] && [ "${API_ID}" != "None" ]; then
-            STAGE_NAME=$(aws apigatewayv2 get-stages \
-              --api-id "${API_ID}" \
-              --query "Items[?tags.environment=='${ENVIRONMENT}'].StageName" \
-              --output text || true)
-            STAGE_NAME=$(echo "${STAGE_NAME}" | tr ' ' '\n' | head -n1)
-            if [ -z "${STAGE_NAME}" ] || [ "${STAGE_NAME}" = "None" ]; then
-              STAGE_NAME=$(aws apigatewayv2 get-stages \
-                --api-id "${API_ID}" \
-                --query "Items[0].StageName" \
-                --output text || true)
-              STAGE_NAME=$(echo "${STAGE_NAME}" | tr ' ' '\n' | head -n1)
+          url="${API_URL}"
+          if [ -z "${url}" ]; then
+            tmp_err="$(mktemp)"
+            url=$(aws ssm get-parameter \
+              --name "${SSM_PARAMETER}" \
+              --with-decryption \
+              --region "${AWS_REGION}" \
+              --query 'Parameter.Value' \
+              --output text 2>"${tmp_err}" || true)
+            if [ "${url}" = "None" ]; then
+              url=""
             fi
-
-            BASE_DOMAIN=$(aws apigatewayv2 get-domain-names \
-              --query "Items[?tags.environment=='${ENVIRONMENT}'].DomainName" \
-              --output text || true)
-            BASE_DOMAIN=$(echo "${BASE_DOMAIN}" | tr ' ' '\n' | head -n1)
-            BASE_PATH=$(aws apigatewayv2 get-domain-names \
-              --query "Items[?tags.environment=='${ENVIRONMENT}'].DomainNameConfigurations[0].ApiMappingSelectionExpression" \
-              --output text || true)
-            BASE_PATH=$(echo "${BASE_PATH}" | tr ' ' '\n' | head -n1)
-
-            if [ -n "${BASE_DOMAIN}" ] && [ "${BASE_DOMAIN}" != "None" ]; then
-              API_URL="https://${BASE_DOMAIN}"
-              if [ -n "${BASE_PATH}" ] && [ "${BASE_PATH}" != "None" ]; then
-                API_URL="${API_URL}/${BASE_PATH}"
+            if [ -z "${url}" ]; then
+              echo "::error::Unable to resolve API URL from parameter ${SSM_PARAMETER}."
+              if [ -s "${tmp_err}" ]; then
+                echo "--- aws ssm get-parameter output ---"
+                cat "${tmp_err}"
+                echo "------------------------------------"
               fi
-            else
-              API_URL="https://${API_ID}.execute-api.${REGION}.amazonaws.com/${STAGE_NAME}"
-            fi
-          else
-            # Fallback to API Gateway v1 (REST APIs)
-            API_ID=$(aws apigateway get-rest-apis \
-              --query "items[?tags.environment=='${ENVIRONMENT}'].id" \
-              --output text || true)
-            API_ID=$(echo "${API_ID}" | tr ' ' '\n' | head -n1)
-
-            if [ -z "${API_ID}" ] || [ "${API_ID}" = "None" ]; then
-              API_ID=$(aws apigateway get-rest-apis \
-                --query "items[?contains(name, '${ENVIRONMENT}')].id" \
-                --output text || true)
-              API_ID=$(echo "${API_ID}" | tr ' ' '\n' | head -n1)
-            fi
-
-            if [ -z "${API_ID}" ] || [ "${API_ID}" = "None" ]; then
-              echo "::error::Failed to discover API Gateway for environment ${ENVIRONMENT}"
+              rm -f "${tmp_err}"
               exit 1
             fi
-
-            STAGE_NAME=$(aws apigateway get-stages \
-              --rest-api-id "${API_ID}" \
-              --query "item[?tags.environment=='${ENVIRONMENT}'].stageName" \
-              --output text || true)
-            STAGE_NAME=$(echo "${STAGE_NAME}" | tr ' ' '\n' | head -n1)
-            if [ -z "${STAGE_NAME}" ] || [ "${STAGE_NAME}" = "None" ]; then
-              STAGE_NAME=$(aws apigateway get-stages \
-                --rest-api-id "${API_ID}" \
-                --query "item[0].stageName" \
-                --output text || true)
-              STAGE_NAME=$(echo "${STAGE_NAME}" | tr ' ' '\n' | head -n1)
-            fi
-
-            CUSTOM_DOMAIN=$(aws apigateway get-domain-names \
-              --query "items[?tags.environment=='${ENVIRONMENT}'].domainName" \
-              --output text || true)
-            CUSTOM_DOMAIN=$(echo "${CUSTOM_DOMAIN}" | tr ' ' '\n' | head -n1)
-
-            if [ -n "${CUSTOM_DOMAIN}" ] && [ "${CUSTOM_DOMAIN}" != "None" ]; then
-              API_URL="https://${CUSTOM_DOMAIN}"
-            else
-              API_URL="https://${API_ID}.execute-api.${REGION}.amazonaws.com/${STAGE_NAME}"
-            fi
+            rm -f "${tmp_err}"
           fi
-
-          if [ -z "${API_URL}" ] || [ "${API_URL}" = "None" ]; then
-            echo "::error::Unable to resolve API URL for environment ${ENVIRONMENT}"
-            exit 1
-          fi
-
-          echo "API_URL=${API_URL}" >> "$GITHUB_ENV"
+          echo "Resolved API URL: ${url}"
+          echo "API_URL=${url}" >> $GITHUB_ENV
 
       - name: Obtain Cognito token
         if: env.SHOULD_RUN == 'true' && env.COGNITO_USER_POOL_ID != '' && env.COGNITO_APP_CLIENT_ID != '' && env.COGNITO_USERNAME != '' && env.COGNITO_PASSWORD != ''
@@ -291,4 +242,5 @@ jobs:
             echo "### [SKIP] - ${ENV_NAME}"
             echo "- Reason: not selected for this execution."
           } >> "$GITHUB_STEP_SUMMARY"
+
 
