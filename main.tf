@@ -644,7 +644,7 @@ module "lambda-indexer" {
     local.dynamodb_variables,
     local.sbeacon_variables,
     local.athena_variables,
-    { INDEXER_TOPIC_ARN : aws_sns_topic.indexer.arn }
+    { INDEXER_TOPIC_ARN = aws_sns_topic.indexer.arn }
   )
 
   layers = [
