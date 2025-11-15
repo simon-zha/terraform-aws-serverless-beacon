@@ -8,6 +8,7 @@ from shared.apiutils import (
 
 
 def lambda_handler(event, context):
+    print("Hello world!!!!")
     print("Event Received: {}".format(json.dumps(event)))
     request_params, errors, status = parse_request(event)
     
