@@ -469,17 +469,41 @@ jobs:
           # Wait a moment for state to be fully updated
           sleep 2
           
+          # Check if API Gateway resource exists in state
+          echo "Checking if API Gateway resource exists..."
+          if ! terraform -chdir=${{ env.TF_WORKING_DIR }} state list | grep -q "aws_api_gateway_rest_api.BeaconApi"; then
+            echo "::error::API Gateway resource 'aws_api_gateway_rest_api.BeaconApi' not found in state."
+            echo "This suggests terraform apply may have failed or the resource was not created."
+            echo "Listing all resources in state:"
+            terraform -chdir=${{ env.TF_WORKING_DIR }} state list 2>&1 || true
+            echo "Checking terraform apply status..."
+            terraform -chdir=${{ env.TF_WORKING_DIR }} show 2>&1 | grep -E "(aws_api_gateway|Error|Apply)" | head -30 || true
+            exit 1
+          fi
+          
           # Get JSON output, capturing stderr separately for error messages
           json_output=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -json api_url 2>/dev/null) || {
             error_output=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -json api_url 2>&1 || true)
-            echo "::error::Failed to get terraform output 'api_url'. Output may not exist yet."
+            echo "::error::Failed to get terraform output 'api_url'."
             echo "Error output: ${error_output}"
-            echo "Checking terraform state..."
-            terraform -chdir=${{ env.TF_WORKING_DIR }} state list 2>&1 || true
-            echo "Attempting to list all outputs:"
+            echo "API Gateway resource exists, but output cannot be read."
+            echo "Attempting to manually construct URL from state..."
+            api_id=$(terraform -chdir=${{ env.TF_WORKING_DIR }} state show aws_api_gateway_rest_api.BeaconApi 2>/dev/null | grep -E "^id\s+=" | awk '{print $3}' || echo "")
+            stage_name=$(terraform -chdir=${{ env.TF_WORKING_DIR }} state show aws_api_gateway_stage.BeaconApi 2>/dev/null | grep -E "^stage_name\s+=" | awk '{print $3}' || echo "")
+            if [ -n "${api_id}" ] && [ -n "${stage_name}" ]; then
+              url="https://${api_id}.execute-api.${{ env.AWS_REGION }}.amazonaws.com/${stage_name}"
+              echo "Manually constructed URL: ${url}"
+              echo "SMOKE_URL=${url}" >> $GITHUB_ENV
+              aws ssm put-parameter \
+                --name "/serverless-beacon/${{ env.TARGET_WORKSPACE }}/api_url" \
+                --value "${url}" \
+                --type String \
+                --overwrite \
+                --region "${{ env.AWS_REGION }}" || true
+              exit 0
+            fi
+            echo "Could not construct URL manually. Listing all outputs:"
             terraform -chdir=${{ env.TF_WORKING_DIR }} output 2>&1 || true
-            echo "Checking if apply was successful..."
-            terraform -chdir=${{ env.TF_WORKING_DIR }} show 2>&1 | head -20 || true
             exit 1
           }
           
