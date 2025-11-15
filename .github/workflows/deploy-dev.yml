@@ -462,15 +462,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Get JSON output, filtering stderr warnings
-          json_output=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -json api_url 2>/dev/null || echo "")
-          if [ -z "${json_output}" ]; then
+          # Get JSON output, capturing stderr separately for error messages
+          json_output=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -json api_url 2>/dev/null) || {
+            error_output=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -json api_url 2>&1 || true)
             echo "::error::Failed to get terraform output 'api_url'. Output may not exist yet."
+            echo "Error output: ${error_output}"
+            echo "Attempting to list all outputs:"
             terraform -chdir=${{ env.TF_WORKING_DIR }} output 2>&1 || true
             exit 1
+          }
+          
+          # Validate that we got valid JSON before trying to parse
+          if [ -z "${json_output}" ] || ! echo "${json_output}" | python3 -c "import sys, json; json.load(sys.stdin)" 2>/dev/null; then
+            echo "::error::terraform output 'api_url' did not return valid JSON."
+            echo "Output received: ${json_output}"
+            exit 1
           fi
+          
           # Extract value from JSON (format: {"value": "...", "type": "string"})
-          url=$(echo "${json_output}" | python3 -c "import sys, json; data = json.load(sys.stdin); value = data.get(\"value\", \"\") if isinstance(data, dict) else \"\"; print(value) if value and value != \"null\" else exit(1)" || echo "")
+          url=$(echo "${json_output}" | python3 -c "import sys, json; data = json.load(sys.stdin); value = data.get(\"value\", \"\") if isinstance(data, dict) else \"\"; print(value) if value and value != \"null\" else exit(1)" 2>&1 || echo "")
+          
           if [ -z "${url}" ]; then
             echo "::error::terraform output 'api_url' is empty or null."
             echo "JSON output: ${json_output}"
