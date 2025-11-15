@@ -1,0 +1,64 @@
+# .github/workflows/ci.yml
+name: ci
+
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+      - 'release/**'
+      - 'hotfix/**'
+      - 'feature/**'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  terraform:
+    name: Terraform fmt & validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.4
+
+      - name: Terraform fmt check
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init (root)
+        run: terraform init -backend=false
+
+      - name: Terraform validate (root)
+        run: terraform validate
+
+      - name: Terraform init (environments)
+        run: terraform -chdir=environments init -backend=false
+
+      - name: Terraform validate (environments)
+        run: terraform -chdir=environments validate
+
+  python:
+    name: Python syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compile Lambda sources
+        run: |
+          python -m compileall lambda shared_resources scripts
+

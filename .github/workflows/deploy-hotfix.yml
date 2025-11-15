@@ -1,0 +1,263 @@
+# .github/workflows/deploy-hotfix.yml
+name: deploy-hotfix
+
+on:
+  push:
+    branches:
+      - 'hotfix/**'
+  workflow_dispatch:
+    inputs:
+      workspace:
+        description: 'Terraform workspace name (default derives from branch)'
+        required: false
+      backend_config:
+        description: 'Backend HCL file (default: backend-staging.hcl)'
+        required: false
+        default: 'backend-staging.hcl'
+      apply:
+        description: 'Run terraform apply (true/false)'
+        required: false
+        default: 'true'
+      aws_region:
+        description: 'AWS region override'
+        required: false
+
+permissions:
+  contents: read
+  id-token: write
+  security-events: write
+
+concurrency:
+  group: terraform-hotfix-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: hotfix
+    env:
+      AWS_REGION: ${{ (github.event_name == 'workflow_dispatch' && inputs.aws_region) || vars.AWS_REGION || 'ap-southeast-2' }}
+      TF_WORKING_DIR: ${{ github.workspace }}/environments
+      TARGET_WORKSPACE: ${{ (github.event_name == 'workflow_dispatch' && inputs.workspace) || github.ref_name }}
+      TF_BACKEND_CONFIG: ${{ (github.event_name == 'workflow_dispatch' && inputs.backend_config) || 'backend-staging.hcl' }}
+      TF_IN_AUTOMATION: true
+      TF_INPUT: false
+      TF_VAR_region: ${{ (github.event_name == 'workflow_dispatch' && inputs.aws_region) || vars.AWS_REGION || 'ap-southeast-2' }}
+      TF_APPLY_FLAG: ${{ (github.event_name == 'workflow_dispatch' && inputs.apply) || 'true' }}
+      IMAGE_TAG: hotfix-${{ github.sha }}
+      TF_VAR_beacon_admin_username: ${{ secrets.BEACON_ADMIN_USERNAME }}
+      TF_VAR_beacon_admin_password: ${{ secrets.BEACON_ADMIN_PASSWORD }}
+      TF_VAR_beacon_guest_username: ${{ secrets.BEACON_GUEST_USERNAME }}
+      TF_VAR_beacon_guest_password: ${{ secrets.BEACON_GUEST_PASSWORD }}
+      TF_VAR_azure_openai_api_key: ${{ secrets.AZURE_OPENAI_API_KEY }}
+      TF_VAR_azure_openai_endpoint: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+      TF_VAR_azure_openai_api_version: ${{ secrets.AZURE_OPENAI_API_VERSION }}
+      TF_VAR_azure_openai_chat_deployment_name: ${{ secrets.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME }}
+      TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - name: Normalize workspace
+        id: ws
+        run: |
+          set -euo pipefail
+          raw="${TARGET_WORKSPACE}"
+          if [ -z "${raw}" ]; then
+            raw="hotfix-${GITHUB_SHA}"
+          fi
+          normalized=$(echo "${raw}" | tr '[:upper:]' '[:lower:]' | sed -E 's#[^a-z0-9-]#-#g')
+          normalized=$(echo "${normalized}" | sed -E 's#-+#-#g' | sed -E 's#(^-|-$)##g')
+          if [ -z "${normalized}" ]; then
+            normalized="hotfix-${GITHUB_SHA}"
+          fi
+          echo "TARGET_WORKSPACE=${normalized}" >> $GITHUB_ENV
+          echo "workspace=${normalized}" >> $GITHUB_OUTPUT
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential autoconf automake libtool pkg-config zlib1g-dev libcurl4-openssl-dev libbz2-dev liblzma-dev
+
+      - name: Run init script
+        run: |
+          chmod +x ./init.sh
+          ./init.sh
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.4
+
+      - name: Prepare analytics shared assets
+        working-directory: lambda/analytics
+        run: python docker_prep.py
+
+      - name: Prepare askbeacon shared assets
+        working-directory: lambda/askbeacon
+        run: python docker_prep.py
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Prepare Terraform plugin cache dir
+        run: |
+          echo "TF_PLUGIN_CACHE_DIR=$HOME/.terraform.d/plugin-cache" >> $GITHUB_ENV
+          mkdir -p "$HOME/.terraform.d/plugin-cache"
+
+      - name: Terraform init (workspace)
+        run: |
+          terraform -chdir=${{ env.TF_WORKING_DIR }} init -input=false -upgrade -backend-config=${{ env.TF_BACKEND_CONFIG }}
+          terraform -chdir=${{ env.TF_WORKING_DIR }} workspace select ${{ env.TARGET_WORKSPACE }} \
+            || terraform -chdir=${{ env.TF_WORKING_DIR }} workspace new ${{ env.TARGET_WORKSPACE }}
+
+      - name: Ensure ECR repos
+        run: |
+          set -euo pipefail
+          REGION="${AWS_REGION}"
+          WORKSPACE="${TARGET_WORKSPACE}"
+          for kind in analytics askbeacon; do
+            repo="sbeacon-${WORKSPACE}-${kind}-lambda-containers"
+            if ! aws ecr describe-repositories --repository-names "$repo" --region "$REGION" >/dev/null 2>&1; then
+              aws ecr create-repository \
+                --repository-name "$repo" \
+                --region "$REGION" \
+                --image-scanning-configuration scanOnPush=true \
+                --image-tag-mutability MUTABLE >/dev/null
+            fi
+          done
+
+      - name: Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: ${{ runner.os }}-buildx-
+
+      - name: ECR Login
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & Push analytics image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./lambda/analytics
+          push: true
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/sbeacon-${{ env.TARGET_WORKSPACE }}-analytics-lambda-containers:${{ env.IMAGE_TAG }}
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new
+
+      - name: Build & Push askbeacon image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./lambda/askbeacon
+          push: true
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/sbeacon-${{ env.TARGET_WORKSPACE }}-askbeacon-lambda-containers:${{ env.IMAGE_TAG }}
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new
+
+      - name: Move layer cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+      - name: Resolve image digests
+        id: digests
+        run: |
+          set -euo pipefail
+          TAG="${IMAGE_TAG}"
+          get_digest () {
+            local repo="$1"
+            aws ecr describe-images \
+              --repository-name "$repo" \
+              --image-ids imageTag="$TAG" \
+              --query 'imageDetails[0].imageDigest' \
+              --output text
+          }
+          ANALYTICS_REPO="sbeacon-${TARGET_WORKSPACE}-analytics-lambda-containers"
+          ASKBEACON_REPO="sbeacon-${TARGET_WORKSPACE}-askbeacon-lambda-containers"
+          ANALYTICS_DIGEST="$(get_digest "$ANALYTICS_REPO")"
+          ASKBEACON_DIGEST="$(get_digest "$ASKBEACON_REPO")"
+          if [ -z "$ANALYTICS_DIGEST" ] || [ "$ANALYTICS_DIGEST" = "None" ]; then
+            echo "::error::analytics image not found for tag $TAG"; exit 1
+          fi
+          if [ -z "$ASKBEACON_DIGEST" ] || [ "$ASKBEACON_DIGEST" = "None" ]; then
+            echo "::error::askbeacon image not found for tag $TAG"; exit 1
+          fi
+          ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
+          REG="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          echo "TF_VAR_analytics_lambda_image_uri=${REG}/${ANALYTICS_REPO}@${ANALYTICS_DIGEST}" >> $GITHUB_ENV
+          echo "TF_VAR_askbeacon_lambda_image_uri=${REG}/${ASKBEACON_REPO}@${ASKBEACON_DIGEST}" >> $GITHUB_ENV
+          echo "analytics_uri=${REG}/${ANALYTICS_REPO}@${ANALYTICS_DIGEST}" >> $GITHUB_OUTPUT
+          echo "askbeacon_uri=${REG}/${ASKBEACON_REPO}@${ASKBEACON_DIGEST}" >> $GITHUB_OUTPUT
+
+      - name: Terraform plan
+        run: |
+          terraform -chdir=${{ env.TF_WORKING_DIR }} plan -input=false -lock-timeout=10m -out=tfplan
+          terraform -chdir=${{ env.TF_WORKING_DIR }} show -no-color tfplan > ${{ env.TF_WORKING_DIR }}/tfplan.txt
+
+      - name: Upload plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: hotfix-terraform-plan-${{ github.run_id }}
+          path: ${{ env.TF_WORKING_DIR }}/tfplan.txt
+
+      - name: Terraform apply
+        if: env.TF_APPLY_FLAG == 'true'
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} apply -input=false -lock-timeout=10m -auto-approve tfplan
+
+      - name: Publish API URL
+        if: env.TF_APPLY_FLAG == 'true'
+        run: |
+          set -euo pipefail
+          url=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw api_url)
+          if [ -z "${url}" ]; then
+            echo "::error::terraform output 'api_url' is empty."
+            exit 1
+          fi
+          echo "SMOKE_URL=${url}" >> $GITHUB_ENV
+          aws ssm put-parameter \
+            --name "/serverless-beacon/${TARGET_WORKSPACE}/api_url" \
+            --value "${url}" \
+            --type String \
+            --overwrite \
+            --region "${AWS_REGION}"
+
+      - name: Smoke test API
+        if: env.TF_APPLY_FLAG == 'true'
+        run: |
+          set -euo pipefail
+          EXTRA=()
+          login_cmd=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw admin_login_command)
+          if [ "${login_cmd}" != "N/A" ]; then
+            token=$(eval "${login_cmd}")
+            token=$(echo "${token}" | tr -d '"')
+            if [ -n "${token}" ]; then
+              EXTRA+=(--bearer-token "${token}")
+            fi
+          fi
+          python scripts/health_check.py \
+            --url "${SMOKE_URL}" \
+            --expected-status 200 \
+            --retries 5 \
+            --timeout 10 \
+            --backoff 2 \
+            "${EXTRA[@]}"
+
+      - name: Clean up plan files
+        if: always()
+        run: rm -f ${{ env.TF_WORKING_DIR }}/tfplan ${{ env.TF_WORKING_DIR }}/tfplan.txt
+
