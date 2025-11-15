@@ -1,4 +1,4 @@
-name: deploy_prod
+name: deploy-prod
 
 on:
   push:
@@ -23,8 +23,72 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      code_changed: ${{ steps.classify.outputs.code_changed }}
+      terraform_changed: ${{ steps.classify.outputs.terraform_changed }}
+      should_run: ${{ steps.classify.outputs.should_run }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed files
+        id: changed
+        uses: tj-actions/changed-files@v45
+        with:
+          fetch_depth: 0
+
+      - name: Classify changes
+        id: classify
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          code_changed="false"
+          terraform_changed="false"
+
+          files="${{ steps.changed.outputs.all_changed_files }}"
+          if [ -n "$files" ]; then
+            while IFS= read -r file; do
+              case "$file" in
+                *.tf|*.tfvars|*.tfvars.json|*.hcl|environments/*|locals.naming.tf)
+                  terraform_changed="true"
+                  ;;
+              esac
+              case "$file" in
+                lambda/*|shared_resources/*|layers/*|scripts/*|docker/*|init.sh|build_cpp.sh|*.py|*.sh)
+                  code_changed="true"
+                  ;;
+              esac
+            done < <(printf '%s\n' "$files" | tr ' ' '\n')
+          fi
+
+          if [ "$code_changed" = "true" ] || [ "$terraform_changed" = "true" ]; then
+            should_run="true"
+          else
+            should_run="false"
+          fi
+
+          {
+            echo "code_changed=$code_changed"
+            echo "terraform_changed=$terraform_changed"
+            echo "should_run=$should_run"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$should_run" = "true" ]; then
+            echo "Detected changes - code: $code_changed, terraform: $terraform_changed"
+          else
+            echo "No code or terraform changes detected."
+          fi
+
   deploy:
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.should_run == 'true'
     environment: prod
 
     env:
@@ -45,6 +109,8 @@ jobs:
       TF_VAR_azure_openai_api_version: ${{ secrets.AZURE_OPENAI_API_VERSION }}
       TF_VAR_azure_openai_chat_deployment_name: ${{ secrets.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME }}
       TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+      PIPELINE_CODE_CHANGED: ${{ needs.changes.outputs.code_changed }}
+      PIPELINE_TERRAFORM_CHANGED: ${{ needs.changes.outputs.terraform_changed }}
 
     steps:
       - name: Checkout
@@ -236,10 +302,12 @@ jobs:
           ./init.sh
 
       - name: Prepare analytics shared assets
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' }}
         working-directory: lambda/analytics
         run: python docker_prep.py
 
       - name: Prepare askbeacon shared assets
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' }}
         working-directory: lambda/askbeacon
         run: python docker_prep.py
 
@@ -316,3 +384,12 @@ jobs:
       - name: Clean up plan files
         if: always()
         run: rm -f ${{ env.TF_WORKING_DIR }}/tfplan ${{ env.TF_WORKING_DIR }}/tfplan.txt
+
+  no-deploy:
+    name: Skip deployment
+    needs: changes
+    runs-on: ubuntu-latest
+    if: needs.changes.outputs.should_run != 'true'
+    steps:
+      - name: No changes detected
+        run: echo "No code or Terraform changes detected. Skipping deployment."
