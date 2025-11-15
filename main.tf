@@ -768,18 +768,18 @@ module "lambda-askbeacon" {
   )
 }
 module "lambda-test_ping" {
- source = "terraform-aws-modules/lambda/aws"
+  source = "terraform-aws-modules/lambda/aws"
 
- function_name = "testPing${local.environment_suffix}"
- description  = "Test-only ping endpoint."
- handler    = "lambda_function.lambda_handler"
- runtime    = "python3.12"
- source_path = "${path.module}/lambda/testPing"
+  function_name = "testPing${local.environment_suffix}"
+  description   = "Test-only ping endpoint."
+  handler       = "lambda_function.lambda_handler"
+  runtime       = "python3.12"
+  source_path   = "${path.module}/lambda/testPing"
 
- timeout   = 10
- memory_size = 128
- architectures = ["x86_64"]
- publish = false
+  timeout       = 10
+  memory_size   = 128
+  architectures = ["x86_64"]
+  publish       = false
 
- tags  = var.common-tags
+  tags = var.common-tags
 }
