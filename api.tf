@@ -402,6 +402,11 @@ resource "aws_api_gateway_deployment" "BeaconApi" {
       aws_api_gateway_integration.test_ping_get,
       aws_api_gateway_integration_response.test_ping_get,
       aws_api_gateway_method_response.test_ping_get,
+      # /test-health
+      aws_api_gateway_method.test_health_get,
+      aws_api_gateway_integration.test_health_get,
+      aws_api_gateway_integration_response.test_health_get,
+      aws_api_gateway_method_response.test_health_get,
     ]))
   }
 }
