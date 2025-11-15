@@ -1,8 +1,8 @@
 # ../locals.naming.tf 
 locals {
-  env_in   = lower(trimspace(coalesce(var.beacon_environment, terraform.workspace)))
+  env_in = lower(trimspace(coalesce(var.beacon_environment, terraform.workspace)))
 
-  env_map  = { dev = "dev", staging = "staging", prod = "prod" }
+  env_map          = { dev = "dev", staging = "staging", prod = "prod" }
   environment_slug = lookup(local.env_map, local.env_in, "dev")
 
   environment_snake     = replace(local.environment_slug, "-", "_")
