@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Lightweight health check script with retries and optional JSON substring check.
-Usage: python scripts/health_check.py --url URL [--expected-status 200] [--retries 5] [--timeout 5]
+This is the health check script to check if the API is healthy.
 """
 import argparse
 import sys
@@ -11,9 +10,12 @@ import urllib.error
 import json
 
 
-def check_once(url, timeout, expected_status, json_contains):
+def check_once(url, timeout, expected_status, json_contains, headers):
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "health-check-script/1.0"})
+        req_headers = {"User-Agent": "health-check-script/1.0"}
+        if headers:
+            req_headers.update(headers)
+        req = urllib.request.Request(url, headers=req_headers)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             code = resp.getcode()
             body = resp.read()
@@ -44,12 +46,17 @@ def main():
     parser.add_argument("--timeout", type=int, default=5)
     parser.add_argument("--backoff", type=float, default=2.0, help="backoff multiplier")
     parser.add_argument("--json-contains", type=str, default=None, help="optional substring expected in JSON response body")
+    parser.add_argument("--bearer-token", type=str, default=None, help="optional bearer token for Authorization header")
 
     args = parser.parse_args()
 
+    extra_headers = {}
+    if args.bearer_token:
+        extra_headers["Authorization"] = f"Bearer {args.bearer_token}"
+
     wait = 1.0
     for attempt in range(1, args.retries + 1):
-        ok, msg = check_once(args.url, args.timeout, args.expected_status, args.json_contains)
+        ok, msg = check_once(args.url, args.timeout, args.expected_status, args.json_contains, extra_headers)
         print(f"attempt {attempt}/{args.retries}: {msg}")
         if ok:
             print("Health check passed")

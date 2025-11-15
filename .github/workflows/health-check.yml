@@ -1,0 +1,246 @@
+# .github/workflows/health-check.yml
+name: API Health Check
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to check (dev/staging/prod/all)"
+        required: false
+        default: "all"
+      expected_status:
+        description: "Expected HTTP status code"
+        required: false
+        default: "200"
+      retries:
+        description: "Maximum retry attempts"
+        required: false
+        default: "6"
+      timeout:
+        description: "Per-request timeout in seconds"
+        required: false
+        default: "8"
+      backoff:
+        description: "Exponential backoff multiplier"
+        required: false
+        default: "2"
+  schedule:
+    - cron: "20 * * * *"
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+  issues: write
+
+jobs:
+  health-check:
+    name: Check ${{ matrix.environment_name }} API
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - environment_name: dev
+            github_environment: dev
+            workspace: dev
+            ssm_parameter: /serverless-beacon/dev/api_url
+          - environment_name: staging
+            github_environment: staging
+            workspace: staging
+            ssm_parameter: /serverless-beacon/staging/api_url
+          - environment_name: prod
+            github_environment: prod
+            workspace: prod
+            ssm_parameter: /serverless-beacon/prod/api_url
+    environment: ${{ matrix.github_environment }}
+    env:
+      ENV_NAME: ${{ matrix.environment_name }}
+      WORKSPACE: ${{ matrix.workspace }}
+      SSM_PARAMETER: ${{ matrix.ssm_parameter }}
+      API_URL: ""
+      EXPECTED_STATUS: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.expected_status) || '200' }}
+      RETRIES: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.retries) || '6' }}
+      TIMEOUT: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.timeout) || '8' }}
+      BACKOFF: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.backoff) || '2' }}
+      AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+      COGNITO_USER_POOL_ID: ${{ secrets.COGNITO_USER_POOL_ID || '' }}
+      COGNITO_APP_CLIENT_ID: ${{ secrets.COGNITO_APP_CLIENT_ID || '' }}
+      COGNITO_USERNAME: ${{ secrets.BEACON_GUEST_USERNAME || secrets.BEACON_ADMIN_USERNAME || '' }}
+      COGNITO_PASSWORD: ${{ secrets.BEACON_GUEST_PASSWORD || secrets.BEACON_ADMIN_PASSWORD || '' }}
+      SHOULD_RUN: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.environment == 'all' || github.event.inputs.environment == matrix.environment_name }}
+    steps:
+      - name: Report skip
+        if: env.SHOULD_RUN != 'true'
+        run: echo "Skipping ${ENV_NAME} health check because it was not selected."
+
+      - name: Validate Cognito configuration
+        if: env.SHOULD_RUN == 'true'
+        run: |
+          if [ -n "${COGNITO_USER_POOL_ID}" ] && [ -z "${COGNITO_APP_CLIENT_ID}" ]; then
+            echo "::error::COGNITO_USER_POOL_ID is set but COGNITO_APP_CLIENT_ID is missing."
+            exit 1
+          fi
+          if [ -n "${COGNITO_APP_CLIENT_ID}" ] && [ -z "${COGNITO_USER_POOL_ID}" ]; then
+            echo "::error::COGNITO_APP_CLIENT_ID is set but COGNITO_USER_POOL_ID is missing."
+            exit 1
+          fi
+          if [ -n "${COGNITO_USER_POOL_ID}" ] || [ -n "${COGNITO_APP_CLIENT_ID}" ]; then
+            if [ -z "${COGNITO_USERNAME}" ] || [ -z "${COGNITO_PASSWORD}" ]; then
+              echo "::error::Cognito authentication requested but username/password secrets are missing."
+              exit 1
+            fi
+          fi
+
+      - name: Checkout repository
+        if: env.SHOULD_RUN == 'true'
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        if: env.SHOULD_RUN == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve API URL
+        if: env.SHOULD_RUN == 'true'
+        run: |
+          set -euo pipefail
+          url="${API_URL}"
+          if [ -z "${url}" ]; then
+            tmp_err="$(mktemp)"
+            url=$(aws ssm get-parameter \
+              --name "${SSM_PARAMETER}" \
+              --with-decryption \
+              --region "${AWS_REGION}" \
+              --query 'Parameter.Value' \
+              --output text 2>"${tmp_err}" || true)
+            if [ "${url}" = "None" ]; then
+              url=""
+            fi
+            if [ -z "${url}" ]; then
+              echo "::error::Unable to resolve API URL from parameter ${SSM_PARAMETER}."
+              if [ -s "${tmp_err}" ]; then
+                echo "--- aws ssm get-parameter output ---"
+                cat "${tmp_err}"
+                echo "------------------------------------"
+              fi
+              rm -f "${tmp_err}"
+              exit 1
+            fi
+            rm -f "${tmp_err}"
+          fi
+          echo "Resolved API URL: ${url}"
+          echo "API_URL=${url}" >> $GITHUB_ENV
+
+      - name: Obtain Cognito token
+        if: env.SHOULD_RUN == 'true' && env.COGNITO_USER_POOL_ID != '' && env.COGNITO_APP_CLIENT_ID != '' && env.COGNITO_USERNAME != '' && env.COGNITO_PASSWORD != ''
+        id: cognito
+        shell: bash
+        run: |
+          set -euo pipefail
+          response=$(aws cognito-idp admin-initiate-auth \
+            --user-pool-id "${COGNITO_USER_POOL_ID}" \
+            --region "${AWS_REGION}" \
+            --client-id "${COGNITO_APP_CLIENT_ID}" \
+            --auth-flow ADMIN_USER_PASSWORD_AUTH \
+            --auth-parameters USERNAME="${COGNITO_USERNAME}",PASSWORD="${COGNITO_PASSWORD}")
+          token=$(echo "${response}" | jq -r '.AuthenticationResult.IdToken // empty')
+          if [ -z "${token}" ]; then
+            echo "::error::Failed to obtain Cognito IdToken."
+            exit 1
+          fi
+          echo "token=${token}" >> "$GITHUB_OUTPUT"
+          echo "BEARER_TOKEN=${token}" >> "$GITHUB_ENV"
+
+      - name: Set up Python
+        if: env.SHOULD_RUN == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run health check
+        if: env.SHOULD_RUN == 'true'
+        id: health
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          EXTRA_ARGS=()
+          if [ -n "${BEARER_TOKEN:-}" ]; then
+            EXTRA_ARGS+=(--bearer-token "${BEARER_TOKEN}")
+          fi
+          python scripts/health_check.py \
+            --url "${API_URL}" \
+            --expected-status "${EXPECTED_STATUS}" \
+            --retries "${RETRIES}" \
+            --timeout "${TIMEOUT}" \
+            --backoff "${BACKOFF}" \
+            "${EXTRA_ARGS[@]}"
+
+      - name: Handle failure
+        if: env.SHOULD_RUN == 'true' && steps.health.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const envName = '${{ matrix.environment_name }}';
+            const apiUrl = process.env.API_URL;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const title = `API Health Check failed: ${envName}`;
+            const body = [
+              `Environment: **${envName}**`,
+              `URL: ${apiUrl}`,
+              `Workflow run: ${runUrl}`,
+              '',
+              'Please verify API availability.'
+            ].join('\n');
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+              labels: 'health-check'
+            });
+            const existing = issues.find(issue => issue.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: `Health check failed again. Details: ${runUrl}`
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['health-check','automated']
+              });
+            }
+            core.setFailed(`Health check failed for ${envName}`);
+
+      - name: Append result to summary
+        if: env.SHOULD_RUN == 'true'
+        run: |
+          if [ "${{ steps.health.outcome }}" = "success" ]; then
+            status="[PASS]"
+          else
+            status="[FAIL]"
+          fi
+          {
+            echo "### ${status} - ${ENV_NAME}"
+            echo "- URL: ${API_URL}"
+            echo "- Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Append skip summary
+        if: env.SHOULD_RUN != 'true'
+        run: |
+          {
+            echo "### [SKIP] - ${ENV_NAME}"
+            echo "- Reason: not selected for this execution."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+

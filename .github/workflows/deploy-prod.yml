@@ -1,4 +1,4 @@
-name: deploy-prod
+name: deploy_prod
 
 on:
   push:
@@ -372,6 +372,23 @@ jobs:
 
       - name: Terraform Apply
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} apply -input=false -lock-timeout=10m -auto-approve tfplan
+
+      - name: Publish API URL
+        shell: bash
+        run: |
+          set -euo pipefail
+          url=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw api_url)
+          if [ -z "${url}" ]; then
+            echo "::error::terraform output 'api_url' is empty."
+            exit 1
+          fi
+          echo "Discovered API URL: ${url}"
+          aws ssm put-parameter \
+            --name "/serverless-beacon/${{ env.TARGET_WORKSPACE }}/api_url" \
+            --value "${url}" \
+            --type String \
+            --overwrite \
+            --region "${{ env.AWS_REGION }}"
 
       - name: Post summary
         run: |
