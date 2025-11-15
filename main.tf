@@ -783,3 +783,20 @@ module "lambda-test_ping" {
 
   tags = var.common-tags
 }
+
+module "lambda-test_health" {
+  source = "terraform-aws-modules/lambda/aws"
+
+  function_name = "testHealth${local.environment_suffix}"
+  description   = "Test-only health check endpoint."
+  handler       = "lambda_function.lambda_handler"
+  runtime       = "python3.12"
+  source_path   = "${path.module}/lambda/testHealth"
+
+  timeout       = 10
+  memory_size   = 128
+  architectures = ["x86_64"]
+  publish       = false
+
+  tags = var.common-tags
+}
