@@ -462,12 +462,33 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Get JSON output, extracting only the JSON part if warnings are present
-          raw_output=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -json api_url 2>&1 || echo "{}")
-          json_output=$(echo "${raw_output}" | python3 -c "import sys, re; content = sys.stdin.read(); match = re.search(r'\{.*\}', content, re.DOTALL); print(match.group(0) if match else '{}')" || echo "{}")
-          url=$(echo "${json_output}" | python3 -c "import sys, json; data = json.load(sys.stdin); print(data.get('value', ''))" || echo "")
+          # Get JSON output, filtering stderr warnings
+          json_output=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -json api_url 2>/dev/null || echo "")
+          if [ -z "${json_output}" ]; then
+            echo "::error::Failed to get terraform output 'api_url'. Output may not exist yet."
+            terraform -chdir=${{ env.TF_WORKING_DIR }} output 2>&1 || true
+            exit 1
+          fi
+          # Extract value from JSON (format: {"value": "...", "type": "string"})
+          url=$(echo "${json_output}" | python3 -c "
+import sys
+import json
+try:
+    data = json.load(sys.stdin)
+    if isinstance(data, dict) and 'value' in data:
+        value = data['value']
+        if value and value != 'null':
+            print(value)
+        else:
+            sys.exit(1)
+    else:
+        sys.exit(1)
+except Exception as e:
+    sys.exit(1)
+" || echo "")
           if [ -z "${url}" ]; then
-            echo "::error::terraform output 'api_url' is empty."
+            echo "::error::terraform output 'api_url' is empty or null."
+            echo "JSON output: ${json_output}"
             exit 1
           fi
           echo "Discovered API URL: ${url}"
@@ -485,15 +506,31 @@ jobs:
         run: |
           set -euo pipefail
           EXTRA=()
-          # Get JSON output, extracting only the JSON part if warnings are present
-          raw_output=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -json admin_login_command 2>&1 || echo "{}")
-          json_output=$(echo "${raw_output}" | python3 -c "import sys, re; content = sys.stdin.read(); match = re.search(r'\{.*\}', content, re.DOTALL); print(match.group(0) if match else '{}')" || echo "{}")
-          login_cmd=$(echo "${json_output}" | python3 -c "import sys, json; data = json.load(sys.stdin); print(data.get('value', ''))" || echo "")
-          if [ "${login_cmd}" != "N/A" ] && [ -n "${login_cmd}" ]; then
-            token=$(eval "${login_cmd}")
-            token=$(echo "${token}" | tr -d '"')
-            if [ -n "${token}" ]; then
-              EXTRA+=(--bearer-token "${token}")
+          # Get JSON output, filtering stderr warnings
+          json_output=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -json admin_login_command 2>/dev/null || echo "")
+          if [ -n "${json_output}" ]; then
+            login_cmd=$(echo "${json_output}" | python3 -c "
+import sys
+import json
+try:
+    data = json.load(sys.stdin)
+    if isinstance(data, dict) and 'value' in data:
+        value = data['value']
+        if value and value != 'null' and value != 'N/A':
+            print(value)
+        else:
+            sys.exit(1)
+    else:
+        sys.exit(1)
+except Exception as e:
+    sys.exit(1)
+" || echo "")
+            if [ -n "${login_cmd}" ] && [ "${login_cmd}" != "N/A" ]; then
+              token=$(eval "${login_cmd}")
+              token=$(echo "${token}" | tr -d '"')
+              if [ -n "${token}" ]; then
+                EXTRA+=(--bearer-token "${token}")
+              fi
             fi
           fi
           python scripts/health_check.py \
