@@ -1,4 +1,4 @@
-name: deploy_prod
+name: deploy-prod
 
 on:
   push:
@@ -410,3 +410,4 @@ jobs:
     steps:
       - name: No changes detected
         run: echo "No code or Terraform changes detected. Skipping deployment."
+
