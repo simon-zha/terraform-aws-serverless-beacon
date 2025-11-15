@@ -236,7 +236,7 @@ jobs:
             --overwrite \
             --region "${AWS_REGION}"
 
-      - name: Smoke test API
+      # - name: Smoke test API
         # if: env.TF_APPLY_FLAG == 'true'
         # run: |
         #   set -euo pipefail

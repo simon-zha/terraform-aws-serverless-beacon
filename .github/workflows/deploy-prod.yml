@@ -391,7 +391,7 @@ jobs:
             --overwrite \
             --region "${{ env.AWS_REGION }}"
 
-      - name: Smoke test API
+      # - name: Smoke test API
         # shell: bash
         # run: |
         #   set -euo pipefail
@@ -432,5 +432,6 @@ jobs:
     steps:
       - name: No changes detected
         run: echo "No code or Terraform changes detected. Skipping deployment."
+
 
 
