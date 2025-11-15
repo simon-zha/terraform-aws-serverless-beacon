@@ -54,8 +54,6 @@ jobs:
             api_url: ${{ vars.PROD_API_URL }}
     environment: ${{ matrix.github_environment }}
     env:
-      API_URL: ${{ matrix.api_url }}
-      API_VAR_KEY: ${{ matrix.api_var }}
       ENV_NAME: ${{ matrix.environment_name }}
       EXPECTED_STATUS: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.expected_status) || '200' }}
       RETRIES: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.retries) || '6' }}
@@ -72,28 +70,118 @@ jobs:
         if: env.SHOULD_RUN != 'true'
         run: echo "Skipping ${ENV_NAME} health check because it was not selected."
 
-      - name: Validate API URL
-        if: env.SHOULD_RUN == 'true'
-        run: |
-          if [ -z "${API_URL}" ]; then
-            echo "::error::Missing API URL for ${ENV_NAME} (vars.${API_VAR_KEY})."
-            exit 1
-          fi
-          if [ -n "${COGNITO_USER_POOL_ID}" ] && [ -z "${COGNITO_APP_CLIENT_ID}" ]; then
-            echo "::error::COGNITO_USER_POOL_ID is set but COGNITO_APP_CLIENT_ID is missing."
-            exit 1
-          fi
-
       - name: Checkout repository
         if: env.SHOULD_RUN == 'true'
         uses: actions/checkout@v4
 
       - name: Configure AWS credentials
-        if: env.SHOULD_RUN == 'true' && env.COGNITO_USER_POOL_ID != '' && env.COGNITO_APP_CLIENT_ID != '' && env.COGNITO_USERNAME != '' && env.COGNITO_PASSWORD != ''
+        if: env.SHOULD_RUN == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Discover API endpoint
+        if: env.SHOULD_RUN == 'true'
+        id: discover_api
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENVIRONMENT="${ENV_NAME}"
+          REGION="${AWS_REGION}"
+
+          API_ID=""
+          STAGE_NAME=""
+          BASE_PATH=""
+          BASE_DOMAIN=""
+
+          # Try API Gateway v2 (HTTP/WebSocket APIs)
+          API_ID=$(aws apigatewayv2 get-apis \
+            --query "Items[?tags.environment=='${ENVIRONMENT}'].ApiId" \
+            --output text || true)
+          API_ID=$(echo "${API_ID}" | tr ' ' '\n' | head -n1)
+
+          if [ -n "${API_ID}" ] && [ "${API_ID}" != "None" ]; then
+            STAGE_NAME=$(aws apigatewayv2 get-stages \
+              --api-id "${API_ID}" \
+              --query "Items[?tags.environment=='${ENVIRONMENT}'].StageName" \
+              --output text || true)
+            STAGE_NAME=$(echo "${STAGE_NAME}" | tr ' ' '\n' | head -n1)
+            if [ -z "${STAGE_NAME}" ] || [ "${STAGE_NAME}" = "None" ]; then
+              STAGE_NAME=$(aws apigatewayv2 get-stages \
+                --api-id "${API_ID}" \
+                --query "Items[0].StageName" \
+                --output text || true)
+              STAGE_NAME=$(echo "${STAGE_NAME}" | tr ' ' '\n' | head -n1)
+            fi
+
+            BASE_DOMAIN=$(aws apigatewayv2 get-domain-names \
+              --query "Items[?tags.environment=='${ENVIRONMENT}'].DomainName" \
+              --output text || true)
+            BASE_DOMAIN=$(echo "${BASE_DOMAIN}" | tr ' ' '\n' | head -n1)
+            BASE_PATH=$(aws apigatewayv2 get-domain-names \
+              --query "Items[?tags.environment=='${ENVIRONMENT}'].DomainNameConfigurations[0].ApiMappingSelectionExpression" \
+              --output text || true)
+            BASE_PATH=$(echo "${BASE_PATH}" | tr ' ' '\n' | head -n1)
+
+            if [ -n "${BASE_DOMAIN}" ] && [ "${BASE_DOMAIN}" != "None" ]; then
+              API_URL="https://${BASE_DOMAIN}"
+              if [ -n "${BASE_PATH}" ] && [ "${BASE_PATH}" != "None" ]; then
+                API_URL="${API_URL}/${BASE_PATH}"
+              fi
+            else
+              API_URL="https://${API_ID}.execute-api.${REGION}.amazonaws.com/${STAGE_NAME}"
+            fi
+          else
+            # Fallback to API Gateway v1 (REST APIs)
+            API_ID=$(aws apigateway get-rest-apis \
+              --query "items[?tags.environment=='${ENVIRONMENT}'].id" \
+              --output text || true)
+            API_ID=$(echo "${API_ID}" | tr ' ' '\n' | head -n1)
+
+            if [ -z "${API_ID}" ] || [ "${API_ID}" = "None" ]; then
+              API_ID=$(aws apigateway get-rest-apis \
+                --query "items[?contains(name, '${ENVIRONMENT}')].id" \
+                --output text || true)
+              API_ID=$(echo "${API_ID}" | tr ' ' '\n' | head -n1)
+            fi
+
+            if [ -z "${API_ID}" ] || [ "${API_ID}" = "None" ]; then
+              echo "::error::Failed to discover API Gateway for environment ${ENVIRONMENT}"
+              exit 1
+            fi
+
+            STAGE_NAME=$(aws apigateway get-stages \
+              --rest-api-id "${API_ID}" \
+              --query "item[?tags.environment=='${ENVIRONMENT}'].stageName" \
+              --output text || true)
+            STAGE_NAME=$(echo "${STAGE_NAME}" | tr ' ' '\n' | head -n1)
+            if [ -z "${STAGE_NAME}" ] || [ "${STAGE_NAME}" = "None" ]; then
+              STAGE_NAME=$(aws apigateway get-stages \
+                --rest-api-id "${API_ID}" \
+                --query "item[0].stageName" \
+                --output text || true)
+              STAGE_NAME=$(echo "${STAGE_NAME}" | tr ' ' '\n' | head -n1)
+            fi
+
+            CUSTOM_DOMAIN=$(aws apigateway get-domain-names \
+              --query "items[?tags.environment=='${ENVIRONMENT}'].domainName" \
+              --output text || true)
+            CUSTOM_DOMAIN=$(echo "${CUSTOM_DOMAIN}" | tr ' ' '\n' | head -n1)
+
+            if [ -n "${CUSTOM_DOMAIN}" ] && [ "${CUSTOM_DOMAIN}" != "None" ]; then
+              API_URL="https://${CUSTOM_DOMAIN}"
+            else
+              API_URL="https://${API_ID}.execute-api.${REGION}.amazonaws.com/${STAGE_NAME}"
+            fi
+          fi
+
+          if [ -z "${API_URL}" ] || [ "${API_URL}" = "None" ]; then
+            echo "::error::Unable to resolve API URL for environment ${ENVIRONMENT}"
+            exit 1
+          fi
+
+          echo "API_URL=${API_URL}" >> "$GITHUB_ENV"
 
       - name: Obtain Cognito token
         if: env.SHOULD_RUN == 'true' && env.COGNITO_USER_POOL_ID != '' && env.COGNITO_APP_CLIENT_ID != '' && env.COGNITO_USERNAME != '' && env.COGNITO_PASSWORD != ''
