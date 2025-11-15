@@ -470,22 +470,7 @@ jobs:
             exit 1
           fi
           # Extract value from JSON (format: {"value": "...", "type": "string"})
-          url=$(echo "${json_output}" | python3 -c "
-import sys
-import json
-try:
-    data = json.load(sys.stdin)
-    if isinstance(data, dict) and 'value' in data:
-        value = data['value']
-        if value and value != 'null':
-            print(value)
-        else:
-            sys.exit(1)
-    else:
-        sys.exit(1)
-except Exception as e:
-    sys.exit(1)
-" || echo "")
+          url=$(echo "${json_output}" | python3 -c "import sys, json; data = json.load(sys.stdin); value = data.get(\"value\", \"\") if isinstance(data, dict) else \"\"; print(value) if value and value != \"null\" else exit(1)" || echo "")
           if [ -z "${url}" ]; then
             echo "::error::terraform output 'api_url' is empty or null."
             echo "JSON output: ${json_output}"
@@ -509,22 +494,7 @@ except Exception as e:
           # Get JSON output, filtering stderr warnings
           json_output=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -json admin_login_command 2>/dev/null || echo "")
           if [ -n "${json_output}" ]; then
-            login_cmd=$(echo "${json_output}" | python3 -c "
-import sys
-import json
-try:
-    data = json.load(sys.stdin)
-    if isinstance(data, dict) and 'value' in data:
-        value = data['value']
-        if value and value != 'null' and value != 'N/A':
-            print(value)
-        else:
-            sys.exit(1)
-    else:
-        sys.exit(1)
-except Exception as e:
-    sys.exit(1)
-" || echo "")
+            login_cmd=$(echo "${json_output}" | python3 -c "import sys, json; data = json.load(sys.stdin); value = data.get(\"value\", \"\") if isinstance(data, dict) else \"\"; print(value) if value and value != \"null\" and value != \"N/A\" else exit(1)" || echo "")
             if [ -n "${login_cmd}" ] && [ "${login_cmd}" != "N/A" ]; then
               token=$(eval "${login_cmd}")
               token=$(echo "${token}" | tr -d '"')
