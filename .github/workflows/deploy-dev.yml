@@ -462,7 +462,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          url=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw api_url 2>/dev/null | grep -v "^│" | grep -v "^╵" | tr -d '\n' || echo "")
+          # Get JSON output, extracting only the JSON part if warnings are present
+          raw_output=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -json api_url 2>&1 || echo "{}")
+          json_output=$(echo "${raw_output}" | python3 -c "import sys, re; content = sys.stdin.read(); match = re.search(r'\{.*\}', content, re.DOTALL); print(match.group(0) if match else '{}')" || echo "{}")
+          url=$(echo "${json_output}" | python3 -c "import sys, json; data = json.load(sys.stdin); print(data.get('value', ''))" || echo "")
           if [ -z "${url}" ]; then
             echo "::error::terraform output 'api_url' is empty."
             exit 1
@@ -482,7 +485,10 @@ jobs:
         run: |
           set -euo pipefail
           EXTRA=()
-          login_cmd=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw admin_login_command 2>/dev/null | grep -v "^│" | grep -v "^╵" | tr -d '\n' || echo "")
+          # Get JSON output, extracting only the JSON part if warnings are present
+          raw_output=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -json admin_login_command 2>&1 || echo "{}")
+          json_output=$(echo "${raw_output}" | python3 -c "import sys, re; content = sys.stdin.read(); match = re.search(r'\{.*\}', content, re.DOTALL); print(match.group(0) if match else '{}')" || echo "{}")
+          login_cmd=$(echo "${json_output}" | python3 -c "import sys, json; data = json.load(sys.stdin); print(data.get('value', ''))" || echo "")
           if [ "${login_cmd}" != "N/A" ] && [ -n "${login_cmd}" ]; then
             token=$(eval "${login_cmd}")
             token=$(echo "${token}" | tr -d '"')
