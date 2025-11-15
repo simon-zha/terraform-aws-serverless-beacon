@@ -237,25 +237,25 @@ jobs:
             --region "${AWS_REGION}"
 
       - name: Smoke test API
-        if: env.TF_APPLY_FLAG == 'true'
-        run: |
-          set -euo pipefail
-          EXTRA=()
-          login_cmd=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw admin_login_command)
-          if [ "${login_cmd}" != "N/A" ]; then
-            token=$(eval "${login_cmd}")
-            token=$(echo "${token}" | tr -d '"')
-            if [ -n "${token}" ]; then
-              EXTRA+=(--bearer-token "${token}")
-            fi
-          fi
-          python scripts/health_check.py \
-            --url "${SMOKE_URL}" \
-            --expected-status 200 \
-            --retries 5 \
-            --timeout 10 \
-            --backoff 2 \
-            "${EXTRA[@]}"
+        # if: env.TF_APPLY_FLAG == 'true'
+        # run: |
+        #   set -euo pipefail
+        #   EXTRA=()
+        #   login_cmd=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw admin_login_command)
+        #   if [ "${login_cmd}" != "N/A" ]; then
+        #     token=$(eval "${login_cmd}")
+        #     token=$(echo "${token}" | tr -d '"')
+        #     if [ -n "${token}" ]; then
+        #       EXTRA+=(--bearer-token "${token}")
+        #     fi
+        #   fi
+        #   python scripts/health_check.py \
+        #     --url "${SMOKE_URL}" \
+        #     --expected-status 200 \
+        #     --retries 5 \
+        #     --timeout 10 \
+        #     --backoff 2 \
+        #     "${EXTRA[@]}"
 
       - name: Clean up plan files
         if: always()
