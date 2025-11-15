@@ -38,8 +38,72 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      code_changed: ${{ steps.classify.outputs.code_changed }}
+      terraform_changed: ${{ steps.classify.outputs.terraform_changed }}
+      should_run: ${{ steps.classify.outputs.should_run }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed files
+        id: changed
+        uses: tj-actions/changed-files@v45
+        with:
+          fetch_depth: 0
+
+      - name: Classify changes
+        id: classify
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          code_changed="false"
+          terraform_changed="false"
+
+          files="${{ steps.changed.outputs.all_changed_files }}"
+          if [ -n "$files" ]; then
+            while IFS= read -r file; do
+              case "$file" in
+                *.tf|*.tfvars|*.tfvars.json|*.hcl|environments/*|locals.naming.tf)
+                  terraform_changed="true"
+                  ;;
+              esac
+              case "$file" in
+                lambda/*|shared_resources/*|layers/*|scripts/*|docker/*|init.sh|build_cpp.sh|*.py|*.sh)
+                  code_changed="true"
+                  ;;
+              esac
+            done < <(printf '%s\n' "$files" | tr ' ' '\n')
+          fi
+
+          if [ "$code_changed" = "true" ] || [ "$terraform_changed" = "true" ]; then
+            should_run="true"
+          else
+            should_run="false"
+          fi
+
+          {
+            echo "code_changed=$code_changed"
+            echo "terraform_changed=$terraform_changed"
+            echo "should_run=$should_run"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$should_run" = "true" ]; then
+            echo "Detected changes - code: $code_changed, terraform: $terraform_changed"
+          else
+            echo "No code or terraform changes detected."
+          fi
+
   deploy:
     name: Dev Plan/Deploy
+    needs: changes
+    if: needs.changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     environment: dev
 
@@ -66,6 +130,8 @@ jobs:
       TF_VAR_azure_openai_api_version: ${{ secrets.AZURE_OPENAI_API_VERSION }}
       TF_VAR_azure_openai_chat_deployment_name: ${{ secrets.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME }}
       TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+      PIPELINE_CODE_CHANGED: ${{ needs.changes.outputs.code_changed }}
+      PIPELINE_TERRAFORM_CHANGED: ${{ needs.changes.outputs.terraform_changed }}
 
     steps:
       - name: Checkout
@@ -91,10 +157,12 @@ jobs:
           terraform_version: 1.9.4
 
       - name: Prepare analytics shared assets
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' }}
         working-directory: lambda/analytics
         run: python docker_prep.py
 
       - name: Prepare askbeacon shared assets
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' }}
         working-directory: lambda/askbeacon
         run: python docker_prep.py
 
@@ -169,9 +237,11 @@ jobs:
           done
         
       - name: Docker Buildx
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' }}
         uses: docker/setup-buildx-action@v3
 
       - name: Cache docker layers
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' }}
         uses: actions/cache@v4
         with:
           path: /tmp/.buildx-cache
@@ -179,10 +249,12 @@ jobs:
           restore-keys: ${{ runner.os }}-buildx-
 
       - name: ECR Login
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' }}
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build & Push analytics image
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' }}
         uses: docker/build-push-action@v6
         with:
           context: ./lambda/analytics
@@ -193,6 +265,7 @@ jobs:
           cache-to: type=local,dest=/tmp/.buildx-cache-new
 
       - name: Scan analytics image with Trivy (It should fail on HIGH/CRITICAL)
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' }}
         id: scan_analytics
         continue-on-error: true           # Allow run next image vul scan
         uses: aquasecurity/trivy-action@0.24.0
@@ -207,7 +280,7 @@ jobs:
           timeout: '10m'
 
       - name: Attach analytics report to summary
-        if: always() && steps.scan_analytics.outcome != 'skipped'
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' && always() && steps.scan_analytics.outcome != 'skipped' }}
         run: |
           echo '### Analytics Image Trivy Reports: ' >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
@@ -215,13 +288,14 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Upload analytics report artifact
-        if: always() && steps.scan_analytics.outcome != 'skipped'
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' && always() && steps.scan_analytics.outcome != 'skipped' }}
         uses: actions/upload-artifact@v4
         with:
           name: trivy-analytics-${{ github.run_id }}
           path: trivy-analytics.txt
 
       - name: Build & Push askbeacon image
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' }}
         uses: docker/build-push-action@v6
         with:
           context: ./lambda/askbeacon
@@ -232,6 +306,7 @@ jobs:
           cache-to: type=local,dest=/tmp/.buildx-cache-new
 
       - name: Scan askbeacon image with Trivy (It should fail on HIGH/CRITICAL)
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' }}
         id: scan_askbeacon
         continue-on-error: true
         uses: aquasecurity/trivy-action@0.24.0
@@ -246,7 +321,7 @@ jobs:
           timeout: '10m'
 
       - name: Attach askbeacon report to summary
-        if: always() && steps.scan_askbeacon.outcome != 'skipped'
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' && always() && steps.scan_askbeacon.outcome != 'skipped' }}
         run: |
           echo '### Askbeacon Image Trivy Reports: ' >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
@@ -254,14 +329,14 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Upload askbeacon report artifact
-        if: always() && steps.scan_askbeacon.outcome != 'skipped'
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' && always() && steps.scan_askbeacon.outcome != 'skipped' }}
         uses: actions/upload-artifact@v4
         with:
           name: trivy-askbeacon-${{ github.run_id }}
           path: trivy-askbeacon.txt
 
       - name: Gate - It should fail if any image on HIGH/CRITICAL
-        if: always()
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' && always() }}
         run: |
           a="${{ steps.scan_analytics.outcome }}"
           b="${{ steps.scan_askbeacon.outcome }}"
@@ -272,11 +347,13 @@ jobs:
           fi
 
       - name: Move layer cache
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' }}
         run: |
           rm -rf /tmp/.buildx-cache
           mv /tmp/.buildx-cache-new /tmp/.buildx-cache
 
       - name: Resolve ECR digests for dev tag
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' }}
         id: digests
         shell: bash
         run: |
@@ -398,3 +475,12 @@ jobs:
       - name: Clean up plan files
         if: always()
         run: rm -f ${{ env.TF_WORKING_DIR }}/tfplan ${{ env.TF_WORKING_DIR }}/tfplan.txt
+
+  no-deploy:
+    name: Skip deployment
+    needs: changes
+    runs-on: ubuntu-latest
+    if: needs.changes.outputs.should_run != 'true'
+    steps:
+      - name: No changes detected
+        run: echo "No code or Terraform changes detected. Skipping deployment."
