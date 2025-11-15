@@ -53,12 +53,6 @@ jobs:
             api_var: PROD_API_URL
             api_url: ${{ vars.PROD_API_URL }}
     environment: ${{ matrix.github_environment }}
-    if: >
-      ${{
-        (github.event_name != 'workflow_dispatch') ||
-        (github.event.inputs.environment == 'all') ||
-        (github.event.inputs.environment == matrix.environment_name)
-      }}
     env:
       API_URL: ${{ matrix.api_url }}
       API_VAR_KEY: ${{ matrix.api_var }}
@@ -72,8 +66,14 @@ jobs:
       COGNITO_APP_CLIENT_ID: ${{ secrets.COGNITO_APP_CLIENT_ID || '' }}
       COGNITO_USERNAME: ${{ secrets.BEACON_GUEST_USERNAME || secrets.BEACON_ADMIN_USERNAME || '' }}
       COGNITO_PASSWORD: ${{ secrets.BEACON_GUEST_PASSWORD || secrets.BEACON_ADMIN_PASSWORD || '' }}
+      SHOULD_RUN: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.environment == 'all' || github.event.inputs.environment == matrix.environment_name }}
     steps:
+      - name: Report skip
+        if: env.SHOULD_RUN != 'true'
+        run: echo "Skipping ${ENV_NAME} health check because it was not selected."
+
       - name: Validate API URL
+        if: env.SHOULD_RUN == 'true'
         run: |
           if [ -z "${API_URL}" ]; then
             echo "::error::Missing API URL for ${ENV_NAME} (vars.${API_VAR_KEY})."
@@ -85,17 +85,18 @@ jobs:
           fi
 
       - name: Checkout repository
+        if: env.SHOULD_RUN == 'true'
         uses: actions/checkout@v4
 
       - name: Configure AWS credentials
-        if: ${{ env.COGNITO_USER_POOL_ID != '' && env.COGNITO_APP_CLIENT_ID != '' && env.COGNITO_USERNAME != '' && env.COGNITO_PASSWORD != '' }}
+        if: env.SHOULD_RUN == 'true' && env.COGNITO_USER_POOL_ID != '' && env.COGNITO_APP_CLIENT_ID != '' && env.COGNITO_USERNAME != '' && env.COGNITO_PASSWORD != ''
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Obtain Cognito token
-        if: ${{ env.COGNITO_USER_POOL_ID != '' && env.COGNITO_APP_CLIENT_ID != '' && env.COGNITO_USERNAME != '' && env.COGNITO_PASSWORD != '' }}
+        if: env.SHOULD_RUN == 'true' && env.COGNITO_USER_POOL_ID != '' && env.COGNITO_APP_CLIENT_ID != '' && env.COGNITO_USERNAME != '' && env.COGNITO_PASSWORD != ''
         id: cognito
         shell: bash
         run: |
@@ -115,11 +116,13 @@ jobs:
           echo "BEARER_TOKEN=${token}" >> "$GITHUB_ENV"
 
       - name: Set up Python
+        if: env.SHOULD_RUN == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Run health check
+        if: env.SHOULD_RUN == 'true'
         id: health
         continue-on-error: true
         run: |
@@ -137,7 +140,7 @@ jobs:
             "${EXTRA_ARGS[@]}"
 
       - name: Handle failure
-        if: steps.health.outcome == 'failure'
+        if: env.SHOULD_RUN == 'true' && steps.health.outcome == 'failure'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -180,7 +183,7 @@ jobs:
             core.setFailed(`Health check failed for ${envName}`);
 
       - name: Append result to summary
-        if: always()
+        if: env.SHOULD_RUN == 'true'
         run: |
           if [ "${{ steps.health.outcome }}" = "success" ]; then
             status="[PASS]"
@@ -191,5 +194,13 @@ jobs:
             echo "### ${status} - ${ENV_NAME}"
             echo "- URL: ${API_URL}"
             echo "- Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Append skip summary
+        if: env.SHOULD_RUN != 'true'
+        run: |
+          {
+            echo "### [SKIP] - ${ENV_NAME}"
+            echo "- Reason: not selected for this execution."
           } >> "$GITHUB_STEP_SUMMARY"
 
