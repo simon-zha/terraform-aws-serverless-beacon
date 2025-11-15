@@ -99,28 +99,28 @@ data "aws_iam_policy_document" "admin-group-assume-role-policy" {
   # }
 }
 
- resource "aws_iam_role" "admin-group-role" {
-   name               = "admin-group-role${local.environment_suffix}"
-   assume_role_policy = data.aws_iam_policy_document.admin-group-assume-role-policy.json
- }
+resource "aws_iam_role" "admin-group-role" {
+  name               = "admin-group-role${local.environment_suffix}"
+  assume_role_policy = data.aws_iam_policy_document.admin-group-assume-role-policy.json
+}
 
- data "aws_iam_policy_document" "admin-group-role-policy" {
-   statement {
-     actions = [
-       "cognito-idp:*"
-     ]
-     resources = [
-       aws_cognito_user_pool.BeaconUserPool.arn
-     ]
-   }
- }
+data "aws_iam_policy_document" "admin-group-role-policy" {
+  statement {
+    actions = [
+      "cognito-idp:*"
+    ]
+    resources = [
+      aws_cognito_user_pool.BeaconUserPool.arn
+    ]
+  }
+}
 
- resource "aws_iam_policy" "admin-group-role-policy" {
-   name        = "admin-group-role-policy${local.environment_suffix}"
-   description = "admin group permissions"
-   policy      = data.aws_iam_policy_document.admin-group-role-policy.json
+resource "aws_iam_policy" "admin-group-role-policy" {
+  name        = "admin-group-role-policy${local.environment_suffix}"
+  description = "admin group permissions"
+  policy      = data.aws_iam_policy_document.admin-group-role-policy.json
 
- }
+}
 
 resource "aws_iam_role_policy_attachment" "admin-group-role-policy-attachment" {
   role       = aws_iam_role.admin-group-role.name
