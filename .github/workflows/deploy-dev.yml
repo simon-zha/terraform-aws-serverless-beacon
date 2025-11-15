@@ -462,29 +462,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Get JSON output, filtering stderr warnings
-          json_output=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -json api_url 2>/dev/null) || {
-            error_output=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -json api_url 2>&1 || true)
-            echo "::error::Failed to get terraform output 'api_url'."
-            echo "Error output: ${error_output}"
-            echo "Listing all available outputs:"
-            terraform -chdir=${{ env.TF_WORKING_DIR }} output 2>&1 || true
-            exit 1
-          }
-          
-          # Validate that we got valid JSON before trying to parse
-          if [ -z "${json_output}" ] || ! echo "${json_output}" | python3 -c "import sys, json; json.load(sys.stdin)" 2>/dev/null; then
-            echo "::error::terraform output 'api_url' did not return valid JSON."
-            echo "Output received: ${json_output}"
-            exit 1
-          fi
-          
-          # Extract value from JSON (format: {"value": "...", "type": "string"})
-          url=$(echo "${json_output}" | python3 -c "import sys, json; data = json.load(sys.stdin); value = data.get(\"value\", \"\") if isinstance(data, dict) else \"\"; print(value) if value and value != \"null\" else exit(1)" 2>&1 || echo "")
-          
+          url=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw api_url 2>/dev/null || echo "")
           if [ -z "${url}" ]; then
-            echo "::error::terraform output 'api_url' is empty or null."
-            echo "JSON output: ${json_output}"
+            echo "::error::terraform output 'api_url' is empty or missing."
+            echo "Listing available outputs for debugging:"
+            terraform -chdir=${{ env.TF_WORKING_DIR }} output 2>&1 || true
             exit 1
           fi
           echo "Discovered API URL: ${url}"
@@ -502,16 +484,12 @@ jobs:
         run: |
           set -euo pipefail
           EXTRA=()
-          # Get JSON output, filtering stderr warnings
-          json_output=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -json admin_login_command 2>/dev/null || echo "")
-          if [ -n "${json_output}" ]; then
-            login_cmd=$(echo "${json_output}" | python3 -c "import sys, json; data = json.load(sys.stdin); value = data.get(\"value\", \"\") if isinstance(data, dict) else \"\"; print(value) if value and value != \"null\" and value != \"N/A\" else exit(1)" || echo "")
-            if [ -n "${login_cmd}" ] && [ "${login_cmd}" != "N/A" ]; then
-              token=$(eval "${login_cmd}")
-              token=$(echo "${token}" | tr -d '"')
-              if [ -n "${token}" ]; then
-                EXTRA+=(--bearer-token "${token}")
-              fi
+          login_cmd=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw admin_login_command 2>/dev/null || echo "N/A")
+          if [ -n "${login_cmd}" ] && [ "${login_cmd}" != "N/A" ]; then
+            token=$(eval "${login_cmd}")
+            token=$(echo "${token}" | tr -d '"')
+            if [ -n "${token}" ]; then
+              EXTRA+=(--bearer-token "${token}")
             fi
           fi
           python scripts/health_check.py \
