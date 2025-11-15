@@ -471,13 +471,14 @@ jobs:
           
           # Check if API Gateway resource exists in state
           echo "Checking if API Gateway resource exists..."
-          if ! terraform -chdir=${{ env.TF_WORKING_DIR }} state list | grep -q "aws_api_gateway_rest_api.BeaconApi"; then
+          state_list=$(terraform -chdir=${{ env.TF_WORKING_DIR }} state list 2>&1 || echo "")
+          if ! echo "${state_list}" | grep -q "aws_api_gateway_rest_api.BeaconApi"; then
             echo "::error::API Gateway resource 'aws_api_gateway_rest_api.BeaconApi' not found in state."
             echo "This suggests terraform apply may have failed or the resource was not created."
             echo "Listing all resources in state:"
-            terraform -chdir=${{ env.TF_WORKING_DIR }} state list 2>&1 || true
+            echo "${state_list}" || true
             echo "Checking terraform apply status..."
-            terraform -chdir=${{ env.TF_WORKING_DIR }} show 2>&1 | grep -E "(aws_api_gateway|Error|Apply)" | head -30 || true
+            terraform -chdir=${{ env.TF_WORKING_DIR }} show 2>&1 | head -50 || true
             exit 1
           fi
           
@@ -488,8 +489,10 @@ jobs:
             echo "Error output: ${error_output}"
             echo "API Gateway resource exists, but output cannot be read."
             echo "Attempting to manually construct URL from state..."
-            api_id=$(terraform -chdir=${{ env.TF_WORKING_DIR }} state show aws_api_gateway_rest_api.BeaconApi 2>/dev/null | grep -E "^id\s+=" | awk '{print $3}' || echo "")
-            stage_name=$(terraform -chdir=${{ env.TF_WORKING_DIR }} state show aws_api_gateway_stage.BeaconApi 2>/dev/null | grep -E "^stage_name\s+=" | awk '{print $3}' || echo "")
+            api_state=$(terraform -chdir=${{ env.TF_WORKING_DIR }} state show aws_api_gateway_rest_api.BeaconApi 2>&1 || echo "")
+            stage_state=$(terraform -chdir=${{ env.TF_WORKING_DIR }} state show aws_api_gateway_stage.BeaconApi 2>&1 || echo "")
+            api_id=$(echo "${api_state}" | grep -E "^id\s+=" | awk '{print $3}' || echo "")
+            stage_name=$(echo "${stage_state}" | grep -E "^stage_name\s+=" | awk '{print $3}' || echo "")
             if [ -n "${api_id}" ] && [ -n "${stage_name}" ]; then
               url="https://${api_id}.execute-api.${{ env.AWS_REGION }}.amazonaws.com/${stage_name}"
               echo "Manually constructed URL: ${url}"
