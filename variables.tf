@@ -54,7 +54,7 @@ variable "beacon_environment" {
   default     = null
   description = "dev / staging / prod"
   validation {
-    condition     = var.beacon_environment == null || contains(["dev","staging","prod"], lower(var.beacon_environment))
+    condition     = var.beacon_environment == null || contains(["dev", "staging", "prod"], lower(var.beacon_environment))
     error_message = "beacon_environment must be one of: dev, staging, prod."
   }
 }
