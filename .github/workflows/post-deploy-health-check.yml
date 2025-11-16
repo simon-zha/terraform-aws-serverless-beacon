@@ -1,216 +1,99 @@
 # .github/workflows/post-deploy-health-check.yml
 name: post-deploy-health-check
-
 on:
-  workflow_run:
+  workflow_run:  # Trigger: Triggered after other workflows complete
     workflows:
-      - deploy-dev
-      - deploy-staging
-      - deploy_prod
-      - deploy-hotfix
+      - deploy-dev  # Trigger source 1: Dev environment deployment workflow
+      - deploy-staging  # Trigger source 2: Staging environment deployment workflow
+      - deploy_prod  # Trigger source 3: Production environment deployment workflow
+      - deploy-hotfix  # Trigger source 4: Hotfix deployment workflow
     types:
-      - completed
+      - completed  # Execute only when the triggering workflow completes
 
+# Permission configuration: GitHub permissions required for the workflow
 permissions:
-  contents: read
-  actions: read
-  id-token: write
-  issues: write
+  contents: read  # Read repository contents (to access health check script)
+  actions: read  # Read workflow-related information
+  id-token: write  # Write identity token (for AWS authentication)
+  issues: write  # Create GitHub Issues (on health check failure)
 
 jobs:
   health:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
-    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}  # Execute only if triggering workflow succeeds
+    runs-on: ubuntu-latest  # Run environment: Latest Ubuntu system
     steps:
+      # Step 1: Determine target workspace information (match based on triggering deployment workflow)
       - name: Determine target workspace
-        id: target
+        id: target  # Step ID for referencing outputs in subsequent steps
         run: |
-          set -euo pipefail
-          workflow="${{ github.event.workflow.name }}"
-          branch="${{ github.event.workflow_run.head_branch }}"
+          set -euo pipefail  # Strict script mode: exit on error
+          workflow="${{ github.event.workflow.name }}"  # Get name of triggering workflow
+          branch="${{ github.event.workflow_run.head_branch }}"  # Get branch of triggering workflow
+          # Match environment info based on triggering workflow name
           case "${workflow}" in
             "deploy-dev")
-              env_name="dev"
-              workspace="dev"
-              backend="backend-dev.hcl"
+              env_name="dev"  # Environment name: Development
+              workspace="dev"  # Terraform workspace: dev
+              backend="backend-dev.hcl"  # Backend config file: Dev environment
               ;;
             "deploy-staging")
               env_name="staging"
               workspace="staging"
-              backend="backend-staging.hcl"
+              backend="backend-staging.hcl"  # Backend config file: Staging environment
               ;;
             "deploy_prod")
               env_name="prod"
               workspace="prod"
-              backend="backend-prod.hcl"
+              backend="backend-prod.hcl"  # Backend config file: Production environment
               ;;
             "deploy-hotfix")
-              env_name="hotfix"
+              env_name="hotfix"  # Environment name: Hotfix
+              # Normalize branch name as workspace (use workflow ID if no branch)
               if [ -n "${branch}" ]; then
                 normalized=$(echo "${branch}" | tr '[:upper:]' '[:lower:]' | sed -E 's#[^a-z0-9-]#-#g' | sed -E 's#-+#-#g' | sed -E 's#(^-|-$)##g')
               else
                 normalized="hotfix-${{ github.event.workflow_run.id }}"
               fi
-              workspace="${normalized}"
-              backend="backend-staging.hcl"
+              workspace="${normalized}"  # Terraform workspace: Normalized name
+              backend="backend-staging.hcl"  # Backend config file: Reuse staging
               ;;
             *)
               echo "::error::Unknown workflow ${workflow}"
               exit 1
               ;;
           esac
+          # Output environment, workspace, and backend config to env variables
           echo "environment=${env_name}" >> "$GITHUB_OUTPUT"
           echo "workspace=${workspace}" >> "$GITHUB_OUTPUT"
           echo "backend=${backend}" >> "$GITHUB_OUTPUT"
 
+      # Step 2: Check out repository (to access health check script and Terraform files)
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Step 3: Set up Terraform
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.9.4
 
+      # Step 4: Set up Python environment
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
+      # Step 5: Configure AWS credentials (for SSM parameter and Terraform state access)
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}  # AWS role ARN from GitHub Secrets
+          aws-region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}  # AWS region (repo var first, default to Sydney)
 
+      # Step 6: Resolve API URL from AWS SSM Parameter Store
       - name: Resolve API URL
-        id: url
+        id: url  # Step ID for referencing API URL in subsequent steps
         run: |
           set -euo pipefail
           workspace="${{ steps.target.outputs.workspace }}"
-          parameter="/serverless-beacon/${workspace}/api_url"
-          tmp_err="$(mktemp)"
-          url=$(aws ssm get-parameter \
-            --name "${parameter}" \
-            --with-decryption \
-            --region "${{ vars.AWS_REGION || 'ap-southeast-2' }}" \
-            --query 'Parameter.Value' \
-            --output text 2>"${tmp_err}" || true)
-          if [ "${url}" = "None" ] || [ -z "${url}" ]; then
-            echo "::error::Unable to resolve API URL from SSM parameter ${parameter}"
-            if [ -s "${tmp_err}" ]; then
-              echo "--- aws ssm get-parameter output ---"
-              cat "${tmp_err}"
-              echo "------------------------------------"
-            fi
-            rm -f "${tmp_err}"
-            exit 1
-          fi
-          rm -f "${tmp_err}"
-          echo "url=${url}" >> "$GITHUB_OUTPUT"
-
-      - name: Obtain Cognito token
-        id: cognito
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          backend="${{ steps.target.outputs.backend }}"
-          workspace="${{ steps.target.outputs.workspace }}"
-          terraform -chdir=environments init -input=false -upgrade -backend-config="${backend}" >/dev/null
-          if ! terraform -chdir=environments workspace select "${workspace}" >/dev/null; then
-            echo "Workspace ${workspace} not found; skipping token acquisition." >&2
-            exit 0
-          fi
-          login_cmd=$(terraform -chdir=environments output -raw admin_login_command 2>/dev/null || echo "N/A")
-          if [ "${login_cmd}" = "N/A" ]; then
-            exit 0
-          fi
-          token=$(eval "${login_cmd}")
-          token=$(echo "${token}" | tr -d '"')
-          if [ -z "${token}" ]; then
-            echo "Token acquisition returned empty string" >&2
-            exit 1
-          fi
-          echo "token=${token}" >> "$GITHUB_OUTPUT"
-
-      - name: Run health check
-        id: health
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          EXTRA=()
-          if [ "${{ steps.cognito.outcome }}" = "success" ] && [ -n "${{ steps.cognito.outputs.token }}" ]; then
-            EXTRA+=(--bearer-token "${{ steps.cognito.outputs.token }}")
-          fi
-          python scripts/health_check.py \
-            --url "${{ steps.url.outputs.url }}" \
-            --expected-status 200 \
-            --retries 5 \
-            --timeout 10 \
-            --backoff 2 \
-            "${EXTRA[@]}"
-
-      - name: Open issue on failure
-        if: steps.health.outcome == 'failure'
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const envName = '${{ steps.target.outputs.environment }}';
-            const workspace = '${{ steps.target.outputs.workspace }}';
-            const apiUrl = '${{ steps.url.outputs.url }}';
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const title = `Post-deploy health check failed: ${envName} (${workspace})`;
-            const body = [
-              `Environment: **${envName}**`,
-              `Workspace: \`${workspace}\``,
-              `URL: ${apiUrl}`,
-              `Triggered by: ${context.eventName} (${context.payload.workflow_run.name})`,
-              `Workflow run: ${runUrl}`,
-              '',
-              'Please investigate the failure.'
-            ].join('\n');
-            const { data: issues } = await github.rest.issues.listForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              labels: 'health-check',
-              per_page: 100
-            });
-            const existing = issues.find(issue => issue.title === title);
-            if (existing) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: existing.number,
-                body: `Health check failed again. See run: ${runUrl}`
-              });
-            } else {
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title,
-                body,
-                labels: ['health-check','automated']
-              });
-            }
-            core.setFailed(`Health check failed for ${envName} (${workspace})`);
-
-      - name: Append summary
-        if: always()
-        run: |
-          status="${{ steps.health.outcome }}"
-          if [ "${status}" = "success" ]; then
-            label="[PASS]"
-          elif [ "${status}" = "skipped" ]; then
-            label="[SKIP]"
-          else
-            label="[FAIL]"
-          fi
-          {
-            echo "### ${label} - ${{ steps.target.outputs.environment }} (${{
-              steps.target.outputs.workspace
-            }})"
-            echo "- URL: ${{ steps.url.outputs.url }}"
-            echo "- Trigger: ${{ github.event.workflow.name }} run #${{ github.event.workflow_run.run_number }}"
-          } >> "$GITHUB_STEP_SUMMARY"
-
+          # Build SSM parameter name
