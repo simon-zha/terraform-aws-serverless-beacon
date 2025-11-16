@@ -1,102 +1,122 @@
 # .github/workflows/promote-to-prod.yml
+# Workflow name: Promote Release Candidate (RC) to Stable Version & Create Official Release
 name: Promote RC to Stable & Release
 
+# Trigger: Manual trigger(requires input parameters)
 on:
   workflow_dispatch:
     inputs:
       rc_tag:
         description: 'RC tag to promote (e.g., v1.4.0-rc.3)'
-        required: true
+        required: true  # Mandatory
         type: string
       stable_tag:
         description: 'Stable tag (defaults to rc base, e.g., v1.4.0)'
-        required: false
+        required: false  # Optional
         type: string
 
+# Permission configuration: Set GitHub permissions required for the workflow
 permissions:
-  contents: write
-  id-token: write
-  pull-requests: read
+  contents: write  # Allow writing to repository contents
+  id-token: write  # Allow obtaining identity tokens (for AWS authentication)
+  pull-requests: read  # Only allow reading pull request information
 
+# Concurrency control: Prevent multiple concurrent executions of the same workflow
 concurrency:
-  group: promote-to-prod
-  cancel-in-progress: false
+  group: promote-to-prod  # Concurrency group name
+  cancel-in-progress: false  # Do not cancel running workflows
 
+# Job definition
 jobs:
   promote:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest  # Run environment: Latest Ubuntu system
     env:
+      # Environment variable: AWS region (prioritize repo variable, default to ap-southeast-2)
       AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
 
     steps:
+      # Step 1: Check out the code repository
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4  # Use GitHub's official checkout action
         with:
-          fetch-depth: 0
+          fetch-depth: 0  # Check out full commit history (including all tags)
 
+      # Step 2: Resolve version tags (validate RC tag format, generate stable tag)
       - name: Resolve tags
-        id: ver
-        shell: bash
+        id: ver  # For referencing outputs in subsequent steps
+        shell: bash  # Execute with bash script
         run: |
-          set -euo pipefail
+          set -euo pipefail  # Strict script mode: exit on error
           RC="${{ inputs.rc_tag }}"
+          # Validate RC tag format matches vX.Y.Z-rc.N
           if ! echo "$RC" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$'; then
-            echo "::error::rc_tag must look like vX.Y.Z-rc.N"; exit 1
+            echo "::error::rc_tag must follow vX.Y.Z-rc.N format"; exit 1
           fi
 
+          # Extract base version from RC tag(remove -rc.* suffix)
           BASE="${RC%-rc.*}"
           STABLE_INPUT="${{ inputs.stable_tag || '' }}"
+          # Use input stable tag if provided, otherwise use base version
           if [ -n "$STABLE_INPUT" ]; then
             STABLE="$STABLE_INPUT"
           else
             STABLE="$BASE"
           fi
 
+          # Force fetch all tags
           git fetch --tags --force
-          SHA="$(git rev-list -n 1 "$RC")" || { echo "::error::RC tag not found in git."; exit 1; }
+          # Get commit SHA corresponding to RC tag (fail if tag not found)
+          SHA="$(git rev-list -n 1 "$RC")" || { echo "::error::RC tag not found in Git."; exit 1; }
 
+          # Check if stable tag already exists (fail if exists)
           if git rev-parse -q --verify "refs/tags/$STABLE" >/dev/null; then
             echo "::error::Stable tag '$STABLE' already exists."; exit 1
           fi
 
+          # Output results to environment variables for subsequent steps
           echo "rc=$RC" >> "$GITHUB_OUTPUT"
           echo "stable=$STABLE" >> "$GITHUB_OUTPUT"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
+      # Step 3: Configure AWS credentials (for ECR registry operations)
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}  # Get AWS role ARN from GitHub Secrets
+          aws-region: ${{ env.AWS_REGION }}  # Use AWS region defined earlier
 
+      # Step 4: Ensure production ECR repositories exist (create if missing)
       - name: Ensure prod ECR repos (create if missing)
         shell: bash
         run: |
           set -euo pipefail
           REGION="${AWS_REGION}"
 
+          # Define function: Check and create ECR repository
           ensure_repo () {
             local repo="$1"
+            # Check if repository exists (create if not)
             if ! aws ecr describe-repositories --repository-names "$repo" --region "$REGION" >/dev/null 2>&1; then
               echo "Creating ECR repo: $repo"
               aws ecr create-repository \
                 --repository-name "$repo" \
                 --region "$REGION" \
-                --image-scanning-configuration scanOnPush=true \
-                --image-tag-mutability MUTABLE >/dev/null
+                --image-scanning-configuration scanOnPush=true \  # Enable automatic scanning on image push
+                --image-tag-mutability MUTABLE >/dev/null  # Allow tag mutability
+              # Set lifecycle policy for the repository, clean up expired images
               aws ecr put-lifecycle-policy \
                 --repository-name "$repo" \
                 --lifecycle-policy-text '{
                   "rules":[
                     {
                       "rulePriority":1,
-                      "description":"Expire untagged after 7 days",
+                      "description":"Expire untagged images after 7 days",
                       "selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":7},
                       "action":{"type":"expire"}
                     },
                     {
                       "rulePriority":10,
-                      "description":"Keep last 20 gh-/v tags",
+                      "description":"Keep last 20 images with gh-/v prefixed tags",
                       "selection":{"tagStatus":"tagged","tagPrefixList":["gh-","v"],"countType":"imageCountMoreThan","countNumber":20},
                       "action":{"type":"expire"}
                     }
@@ -107,22 +127,28 @@ jobs:
             fi
           }
 
+          # Ensure two production ECR repositories exist
           ensure_repo "sbeacon-prod-analytics-lambda-containers"
           ensure_repo "sbeacon-prod-askbeacon-lambda-containers"
 
+      # Step 5: Log in to AWS ECR registry (obtain push/pull permissions)
       - name: ECR Login
-        uses: aws-actions/amazon-ecr-login@v2
+        uses: aws-actions/amazon-ecr-login@v2  # AWS official ECR login action
 
+      # Step 6: Verify RC images exist in staging environment
       - name: Assert staging images exist
         shell: bash
         run: |
           set -euo pipefail
           RC="${{ steps.ver.outputs.rc }}"
+          # Check if analytics service RC image exists
           aws ecr describe-images --repository-name sbeacon-staging-analytics-lambda-containers \
             --image-ids imageTag="$RC" --query 'imageDetails[0].imageDigest' --output text
+          # Check if askbeacon service RC image exists
           aws ecr describe-images --repository-name sbeacon-staging-askbeacon-lambda-containers \
             --image-ids imageTag="$RC" --query 'imageDetails[0].imageDigest' --output text
 
+      # Step 7: Copy images from STAGING to PROD (pull->retag->push, no rebuild)
       - name: Copy images STAGING -> PROD via pull/tag/push (no rebuild)
         id: copy
         shell: bash
@@ -131,29 +157,35 @@ jobs:
           RC="${{ steps.ver.outputs.rc }}"
           STABLE="${{ steps.ver.outputs.stable }}"
 
+          # Get current AWS account ID
           ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
+          # Build ECR registry URL
           REG="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
+          # Define function: Copy image (staging->production)
           copy_image () {
             local svc="$1"
-            local SRC="${REG}/sbeacon-staging-${svc}-lambda-containers:${RC}"
-            local DST="${REG}/sbeacon-prod-${svc}-lambda-containers:${STABLE}"
+            local SRC="${REG}/sbeacon-staging-${svc}-lambda-containers:${RC}"  # Staging image URL
+            local DST="${REG}/sbeacon-prod-${svc}-lambda-containers:${STABLE}"  # Production image URL
 
             echo "Pull  ${SRC}"
-            docker pull "${SRC}"
+            docker pull "${SRC}"  # Pull RC image from staging
 
             echo "Tag   ${SRC} -> ${DST}"
-            docker tag "${SRC}" "${DST}"
+            docker tag "${SRC}" "${DST}"  # Retag image with stable version
 
             echo "Push  ${DST}"
-            docker push "${DST}"
+            docker push "${DST}"  # Push image to production ECR registry
           }
 
+          # Copy images for both services
           copy_image analytics
           copy_image askbeacon
 
+          # Output ECR registry URL for subsequent steps
           echo "registry=${REG}" >> "$GITHUB_OUTPUT"
 
+      # Step 8: Resolve digests for stable tags in PROD (for verification and documentation)
       - name: Resolve PROD digests for the stable tag
         id: digests
         shell: bash
@@ -163,6 +195,7 @@ jobs:
           ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
           REG="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
+          # Define function: Get image digest
           get_digest () {
             local repo="$1"
             aws ecr describe-images \
@@ -171,12 +204,15 @@ jobs:
               --query 'imageDetails[0].imageDigest' --output text
           }
 
+          # Define two production repository names
           A_REPO="sbeacon-prod-analytics-lambda-containers"
           B_REPO="sbeacon-prod-askbeacon-lambda-containers"
 
+          # Get digests for both service images
           A_DIGEST="$(get_digest "$A_REPO")"
           B_DIGEST="$(get_digest "$B_REPO")"
 
+          # Verify image digests exist (fail if not found)
           if [ -z "$A_DIGEST" ] || [ "$A_DIGEST" = "None" ]; then
             echo "::error::analytics image not found for tag $STABLE in PROD"; exit 1
           fi
@@ -184,29 +220,36 @@ jobs:
             echo "::error::askbeacon image not found for tag $STABLE in PROD"; exit 1
           fi
 
+          # Output registry URL and digests for subsequent steps
           echo "registry=$REG"              >> "$GITHUB_OUTPUT"
           echo "analytics_digest=$A_DIGEST" >> "$GITHUB_OUTPUT"
           echo "askbeacon_digest=$B_DIGEST" >> "$GITHUB_OUTPUT"
 
+      # Step 9: Create stable Git tag pointing to RC commit
       - name: Create stable Git tag pointing to RC commit
         run: |
+          # Configure Git committer info (use GitHub actor identity)
           git config user.name  "${GITHUB_ACTOR}"
           git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+          # Create annotated stable tag
           git tag -a "${{ steps.ver.outputs.stable }}" "${{ steps.ver.outputs.sha }}" \
             -m "Promote ${{ steps.ver.outputs.rc }} to ${{ steps.ver.outputs.stable }}"
+          # Push tag to remote repository
           git push origin "${{ steps.ver.outputs.stable }}"
 
+      # Step 10: Create GitHub Release (stable version)
       - name: Create GitHub Release (stable)
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v2  # Third-party GitHub release action
         with:
-          tag_name:  ${{ steps.ver.outputs.stable }}
-          name:      ${{ steps.ver.outputs.stable }}
-          prerelease: false
-          make_latest: true
-          generate_release_notes: true
+          tag_name:  ${{ steps.ver.outputs.stable }}  # Release tag
+          name:      ${{ steps.ver.outputs.stable }}  # Release name
+          prerelease: false  # Not a prerelease (official release)
+          make_latest: true  # Mark this release as the latest
+          generate_release_notes: true  # Auto-generate release notes
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # GitHub built-in token (for release permissions)
 
+      # Step 11: Post workflow execution summary (display key info in GitHub UI)
       - name: Post summary
         run: |
           echo "### Promoted \`${{ steps.ver.outputs.rc }}\` → **${{ steps.ver.outputs.stable }}**" >> $GITHUB_STEP_SUMMARY
