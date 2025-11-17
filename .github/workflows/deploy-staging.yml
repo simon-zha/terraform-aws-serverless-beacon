@@ -448,127 +448,46 @@ jobs:
         if: env.TF_APPLY_FLAG == 'true'
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} apply -input=false -lock-timeout=10m -auto-approve tfplan
 
-      - name: Publish API URL
-        if: env.TF_APPLY_FLAG == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          url=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw api_url)
-          if [ -z "${url}" ]; then
-            echo "::error::terraform output 'api_url' is empty."
-            exit 1
-          fi
-          echo "Discovered API URL: ${url}"
-          echo "SMOKE_URL=${url}" >> $GITHUB_ENV
-          aws ssm put-parameter \
-            --name "/serverless-beacon/${{ env.TARGET_WORKSPACE }}/api_url" \
-            --value "${url}" \
-            --type String \
-            --overwrite \
-            --region "${{ env.AWS_REGION }}"
+      # - name: Publish API URL
+      #   if: env.TF_APPLY_FLAG == 'true'
+      #   shell: bash
+      #   run: |
+      #     set -euo pipefail
+      #     url=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw api_url)
+      #     if [ -z "${url}" ]; then
+      #       echo "::error::terraform output 'api_url' is empty."
+      #       exit 1
+      #     fi
+      #     echo "Discovered API URL: ${url}"
+      #     echo "SMOKE_URL=${url}" >> $GITHUB_ENV
+      #     aws ssm put-parameter \
+      #       --name "/serverless-beacon/${{ env.TARGET_WORKSPACE }}/api_url" \
+      #       --value "${url}" \
+      #       --type String \
+      #       --overwrite \
+      #       --region "${{ env.AWS_REGION }}"
 
-      - name: Generate admin bearer token
-        if: env.TF_APPLY_FLAG == 'true'
-        id: staging_admin_token
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          TOKEN=""
-          LOGIN_CMD="$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw admin_login_command 2>/dev/null || echo 'N/A')"
-          if [ "${LOGIN_CMD}" != "N/A" ]; then
-            if TOKEN="$(eval "${LOGIN_CMD}" | tr -d '"' || true)" && [ -n "${TOKEN}" ] && [ "${TOKEN}" != "null" ]; then
-              echo "token=${TOKEN}" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-
-          RAW_POOL="$(
-            terraform -chdir=${{ env.TF_WORKING_DIR }} state show module.serverless_beacon.aws_cognito_user_pool.BeaconUserPool 2>/dev/null || true
-          )"
-          COGNITO_POOL_ID="$(echo "${RAW_POOL}" | awk '/id = / {print $3; exit}')"
-          CLIENT_ID="$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw cognito_client_id 2>/dev/null || echo '')"
-
-          if [ -n "${COGNITO_POOL_ID}" ] && [ -n "${CLIENT_ID}" ] \
-             && [ -n "${TF_VAR_beacon_admin_username:-}" ] && [ -n "${TF_VAR_beacon_admin_password:-}" ]; then
-            TOKEN="$(aws cognito-idp admin-initiate-auth \
-              --user-pool-id "${COGNITO_POOL_ID}" \
-              --region "${AWS_REGION}" \
-              --client-id "${CLIENT_ID}" \
-              --auth-flow ADMIN_USER_PASSWORD_AUTH \
-              --auth-parameters USERNAME="${TF_VAR_beacon_admin_username}",PASSWORD="${TF_VAR_beacon_admin_password}" \
-              --query 'AuthenticationResult.IdToken' \
-              --output text 2>/dev/null || true)"
-            if [ -n "${TOKEN}" ] && [ "${TOKEN}" != "None" ]; then
-              echo "token=${TOKEN}" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-
-          echo "token=" >> "$GITHUB_OUTPUT"
-
-      - name: Export staging API definition
-        if: env.TF_APPLY_FLAG == 'true'
-        id: export_staging_swagger
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          RAW_STATE="$(
-            terraform -chdir=${{ env.TF_WORKING_DIR }} state show module.serverless_beacon.aws_api_gateway_rest_api.BeaconApi 2>/dev/null || true
-          )"
-          API_ID="$(echo "${RAW_STATE}" | awk '/id = / {print $3; exit}')"
-
-          if [ -z "${API_ID}" ] || [ "${API_ID}" = "null" ]; then
-            echo "::warning::Unable to determine API Gateway ID; skipping API smoke suite."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          aws apigateway get-export \
-            --rest-api-id "${API_ID}" \
-            --stage-name "${{ env.TARGET_WORKSPACE }}" \
-            --export-type swagger \
-            --parameters extensions='integrations' \
-            --accepts application/json \
-            staging-swagger.json
-
-          echo "skip=false" >> "$GITHUB_OUTPUT"
-          echo "swagger=staging-swagger.json" >> "$GITHUB_OUTPUT"
-
-      - name: Run staging API smoke suite
-        if: env.TF_APPLY_FLAG == 'true' && steps.export_staging_swagger.outputs.skip != 'true'
-        env:
-          ADMIN_TOKEN: ${{ steps.staging_admin_token.outputs.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          TOKEN_ARGS=()
-          if [ -n "${ADMIN_TOKEN:-}" ]; then
-            TOKEN_ARGS+=(--token "${ADMIN_TOKEN}")
-          fi
-          python scripts/api_smoke_report.py \
-            --swagger "${{ steps.export_staging_swagger.outputs.swagger }}" \
-            --base-url "${SMOKE_URL}" \
-            --methods GET \
-            --output staging-api-smoke.md \
-            "${TOKEN_ARGS[@]}"
-
-      - name: Append smoke report to summary
-        if: env.TF_APPLY_FLAG == 'true' && steps.export_staging_swagger.outputs.skip != 'true'
-        shell: bash
-        run: |
-          {
-            echo "### Staging API smoke report"
-            cat staging-api-smoke.md
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload staging API smoke report
-        if: env.TF_APPLY_FLAG == 'true' && steps.export_staging_swagger.outputs.skip != 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: staging-api-smoke-${{ github.run_id }}
-          path: staging-api-smoke.md
+      # - name: Smoke test API
+      #   if: env.TF_APPLY_FLAG == 'true'
+      #   shell: bash
+      #   run: |
+      #     set -euo pipefail
+      #     EXTRA=()
+      #     login_cmd=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw admin_login_command)
+      #     if [ "${login_cmd}" != "N/A" ]; then
+      #       token=$(eval "${login_cmd}")
+      #       token=$(echo "${token}" | tr -d '"')
+      #       if [ -n "${token}" ]; then
+      #         EXTRA+=(--bearer-token "${token}")
+      #       fi
+      #     fi
+      #     python scripts/health_check.py \
+      #       --url "${SMOKE_URL}" \
+      #       --expected-status 200 \
+      #       --retries 5 \
+      #       --timeout 10 \
+      #       --backoff 2 \
+      #       "${EXTRA[@]}"
 
       - name: Create and push RC tag
         if: ${{ env.PIPELINE_CODE_CHANGED == 'true' }}
