@@ -7,7 +7,7 @@ def lambda_handler(event, context):
     "headers": {"Content-Type": "application/json"},
     "body": json.dumps(
       {
-        "message": "this is commit",
+        "message": "this is commit for test",
         "path": event.get("path"),
         "environment": event.get("requestContext", {})
           .get("stage")
