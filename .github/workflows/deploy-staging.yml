@@ -448,46 +448,95 @@ jobs:
         if: env.TF_APPLY_FLAG == 'true'
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} apply -input=false -lock-timeout=10m -auto-approve tfplan
 
-      # - name: Publish API URL
-      #   if: env.TF_APPLY_FLAG == 'true'
-      #   shell: bash
-      #   run: |
-      #     set -euo pipefail
-      #     url=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw api_url)
-      #     if [ -z "${url}" ]; then
-      #       echo "::error::terraform output 'api_url' is empty."
-      #       exit 1
-      #     fi
-      #     echo "Discovered API URL: ${url}"
-      #     echo "SMOKE_URL=${url}" >> $GITHUB_ENV
-      #     aws ssm put-parameter \
-      #       --name "/serverless-beacon/${{ env.TARGET_WORKSPACE }}/api_url" \
-      #       --value "${url}" \
-      #       --type String \
-      #       --overwrite \
-      #       --region "${{ env.AWS_REGION }}"
+      - name: Publish API URL
+        if: env.TF_APPLY_FLAG == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          url=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw api_url)
+          if [ -z "${url}" ]; then
+            echo "::error::terraform output 'api_url' is empty."
+            exit 1
+          fi
+          echo "Discovered API URL: ${url}"
+          echo "SMOKE_URL=${url}" >> $GITHUB_ENV
+          aws ssm put-parameter \
+            --name "/serverless-beacon/${{ env.TARGET_WORKSPACE }}/api_url" \
+            --value "${url}" \
+            --type String \
+            --overwrite \
+            --region "${{ env.AWS_REGION }}"
 
-      # - name: Smoke test API
-      #   if: env.TF_APPLY_FLAG == 'true'
-      #   shell: bash
-      #   run: |
-      #     set -euo pipefail
-      #     EXTRA=()
-      #     login_cmd=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw admin_login_command)
-      #     if [ "${login_cmd}" != "N/A" ]; then
-      #       token=$(eval "${login_cmd}")
-      #       token=$(echo "${token}" | tr -d '"')
-      #       if [ -n "${token}" ]; then
-      #         EXTRA+=(--bearer-token "${token}")
-      #       fi
-      #     fi
-      #     python scripts/health_check.py \
-      #       --url "${SMOKE_URL}" \
-      #       --expected-status 200 \
-      #       --retries 5 \
-      #       --timeout 10 \
-      #       --backoff 2 \
-      #       "${EXTRA[@]}"
+      - name: Acquire smoke test token
+        if: env.TF_APPLY_FLAG == 'true'
+        id: smoke_token
+        shell: bash
+        run: |
+          set -euo pipefail
+          token=""
+          login_cmd=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw admin_login_command || echo "N/A")
+          if [ "${login_cmd}" != "N/A" ] && [ -n "${login_cmd}" ]; then
+            if token=$(eval "${login_cmd}" 2>/dev/null | tr -d '"'); then
+              :
+            else
+              token=""
+            fi
+          fi
+
+          if [ -z "${token}" ] && [ -n "${TF_VAR_beacon_admin_username:-}" ] && [ -n "${TF_VAR_beacon_admin_password:-}" ]; then
+            WORKSPACE="${{ env.TARGET_WORKSPACE }}"
+            POOL_NAME="sbeacon-users-${WORKSPACE}"
+            USER_POOL_ID=$(aws cognito-idp list-user-pools --max-results 60 --query "UserPools[?Name=='${POOL_NAME}'].Id | [0]" --output text 2>/dev/null || echo "")
+            CLIENT_ID=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw cognito_client_id 2>/dev/null || echo "")
+            if [ "${USER_POOL_ID}" != "None" ] && [ -n "${USER_POOL_ID}" ] && [ "${CLIENT_ID}" != "None" ] && [ -n "${CLIENT_ID}" ]; then
+              token=$(aws cognito-idp admin-initiate-auth \
+                --user-pool-id "${USER_POOL_ID}" \
+                --client-id "${CLIENT_ID}" \
+                --auth-flow ADMIN_USER_PASSWORD_AUTH \
+                --auth-parameters USERNAME="${TF_VAR_beacon_admin_username}",PASSWORD="${TF_VAR_beacon_admin_password}" \
+                --query 'AuthenticationResult.IdToken' \
+                --output text 2>/dev/null || echo "")
+              if [ "${token}" = "None" ]; then
+                token=""
+              fi
+            fi
+          fi
+
+          if [ -z "${token}" ]; then
+            echo "::notice::No bearer token acquired; protected endpoints will be reported as skipped."
+          fi
+          echo "bearer=${token}" >> "$GITHUB_OUTPUT"
+
+      - name: API smoke tests (non-blocking)
+        if: env.TF_APPLY_FLAG == 'true'
+        id: smoke
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPORT_JSON="smoke_report.json"
+          REPORT_MD="smoke_report.md"
+          python scripts/api_smoke_report.py \
+            --base-url "${SMOKE_URL}" \
+            --paths-file scripts/smoke_paths_staging.txt \
+            --bearer-token "${{ steps.smoke_token.outputs.bearer }}" \
+            --retries 3 \
+            --backoff 2 \
+            --timeout 10 \
+            --report-json "${REPORT_JSON}" \
+            --report-md "${REPORT_MD}"
+          if [ -f "${REPORT_MD}" ]; then
+            cat "${REPORT_MD}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload smoke test artifacts
+        if: env.TF_APPLY_FLAG == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-api-smoke-${{ github.run_id }}
+          path: |
+            smoke_report.json
+            smoke_report.md
 
       - name: Create and push RC tag
         if: ${{ env.PIPELINE_CODE_CHANGED == 'true' }}
