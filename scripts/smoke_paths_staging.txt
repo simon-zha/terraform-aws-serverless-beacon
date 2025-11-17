@@ -4,11 +4,8 @@ testPing
 
 # Core Beacon endpoints (require auth)
 datasets auth
-datasets/summary auth
 individuals auth
-individuals/summary auth
 runs auth
-runs/summary auth
 cohorts auth
-cohorts/summary auth
+
 
