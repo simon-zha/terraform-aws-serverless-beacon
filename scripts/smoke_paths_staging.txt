@@ -1,0 +1,11 @@
+# Public test endpoints
+test-health
+testPing
+
+# Core Beacon endpoints (require auth)
+datasets auth
+individuals auth
+runs auth
+cohorts auth
+
+
