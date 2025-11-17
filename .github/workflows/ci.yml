@@ -1,64 +1,74 @@
 # .github/workflows/ci.yml
 name: ci
-
 on:
-  pull_request:
-    branches:
-      - main
-      - develop
-      - 'release/**'
-      - 'hotfix/**'
-      - 'feature/**'
+  pull_request:  # Trigger: Triggered by pull requests (PR)
+    branches:  # Only listen to PRs targeting the following branches
+      - main  # Main branch
+      - develop  # Develop branch
+      - 'release/**'  # Release branches (wildcard matches all release/ prefixed branches)
+      - 'hotfix/**'  # Hotfix branches (wildcard matches all hotfix/ prefixed branches)
+      - 'feature/**'  # Feature branches (wildcard matches all feature/ prefixed branches)
 
+# Permission configuration: GitHub permissions required for the workflow
 permissions:
-  contents: read
-  actions: read
+  contents: read  # Read-only access to repository contents
+  actions: read  # Read-only access to workflow information
 
 jobs:
   terraform:
     name: Terraform fmt & validate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest  # Run environment: Latest Ubuntu system
     steps:
+      # Step 1: Check out repository (fetch full commit history)
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0  # Fetch full commit history(avoid dependency missing)
 
+      # Step 2: Set up Terraform (specify version: 1.9.4)
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.9.4
 
+      # Step 3: Terraform format check (verify code style compliance)
       - name: Terraform fmt check
-        run: terraform fmt -check -recursive
+        run: terraform fmt -check -recursive  # -check: Only check, no modification; -recursive: Check all directories recursively
 
+      # Step 4: Terraform init (root directory, disable backend configuration)
       - name: Terraform init (root)
-        run: terraform init -backend=false
+        run: terraform init -backend=false  # -backend=false: Initialize local only, no remote backend config
 
+      # Step 5: Terraform validate (root directory, check config syntax and dependencies)
       - name: Terraform validate (root)
-        run: terraform validate
+        run: terraform validate  # Validate configuration syntax and module dependency validity
 
+      # Step 6: Terraform init (environments directory, disable backend configuration)
       - name: Terraform init (environments)
-        run: terraform -chdir=environments init -backend=false
+        run: terraform -chdir=environments init -backend=false  # -chdir: Set working directory to environments
 
+      # Step 7: Terraform validate (environments directory)
       - name: Terraform validate (environments)
-        run: terraform -chdir=environments validate
+        run: terraform -chdir=environments validate  # Validate Terraform configs in environments directory
 
   python:
     name: Python syntax check
     runs-on: ubuntu-latest
     steps:
+      # Step 1: Check out repository
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0  # Fetch full commit history
 
+      # Step 2: Set up Python environment (specify version: 3.12)
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
+      # Step 3: Compile Python sources (verify syntax correctness; compilation succeeds if no syntax errors)
       - name: Compile Lambda sources
         run: |
+          # Recursively compile all Python files in specified directories (lambda, shared_resources, scripts)
           python -m compileall lambda shared_resources scripts
-
