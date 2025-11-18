@@ -4,6 +4,7 @@ import csv
 import json
 
 import boto3
+import botocore
 from smart_open import open as sopen
 
 from shared.ontoutils import get_ontology_details
@@ -49,12 +50,12 @@ class AthenaModel:
             query, queue=None, execution_parameters=execution_parameters
         )
 
-        if not len(result) > 0:
-            return []
-        elif queue is None:
-            return len(result) > 1
-        else:
-            queue.put(len(result) > 1)
+        if not result:
+            return False
+        outcome = len(result) > 1
+        if queue is None:
+            return outcome
+        queue.put(outcome)
 
     @classmethod
     def parse_array(cls, exec_id):
@@ -89,12 +90,12 @@ class AthenaModel:
             query, queue=None, execution_parameters=execution_parameters
         )
 
-        if not len(result) > 0:
-            return []
-        elif queue is None:
-            return int(result[1]["Data"][0]["VarCharValue"])
-        else:
-            queue.put(int(result[1]["Data"][0]["VarCharValue"]))
+        if not result:
+            return 0
+        value = int(result[1]["Data"][0]["VarCharValue"])
+        if queue is None:
+            return value
+        queue.put(value)
 
 
 def extract_terms(array):
@@ -131,25 +132,36 @@ def run_custom_query(
     print(f"{query=}")
     print(f"{execution_parameters=}")
 
-    if execution_parameters is None:
-        response = athena.start_query_execution(
-            QueryString=query,
-            # ClientRequestToken='string',
-            QueryExecutionContext={"Database": database},
-            WorkGroup=workgroup,
-        )
-    else:
-        response = athena.start_query_execution(
-            QueryString=query,
-            # ClientRequestToken='string',
-            QueryExecutionContext={"Database": database},
-            WorkGroup=workgroup,
-            ExecutionParameters=execution_parameters,
-        )
+    try:
+        if execution_parameters is None:
+            response = athena.start_query_execution(
+                QueryString=query,
+                # ClientRequestToken='string',
+                QueryExecutionContext={"Database": database},
+                WorkGroup=workgroup,
+            )
+        else:
+            response = athena.start_query_execution(
+                QueryString=query,
+                # ClientRequestToken='string',
+                QueryExecutionContext={"Database": database},
+                WorkGroup=workgroup,
+                ExecutionParameters=execution_parameters,
+            )
+    except (botocore.exceptions.BotoCoreError, botocore.exceptions.ClientError) as error:
+        print(f"Athena start_query_execution failed: {error}")
+        return None
+
 
     retries = 0
     while True:
-        exec = athena.get_query_execution(QueryExecutionId=response["QueryExecutionId"])
+        try:
+            exec = athena.get_query_execution(
+                QueryExecutionId=response["QueryExecutionId"]
+            )
+        except (botocore.exceptions.BotoCoreError, botocore.exceptions.ClientError) as error:
+            print(f"Athena get_query_execution failed: {error}")
+            return None
         status = exec["QueryExecution"]["Status"]["State"]
 
         if status in ("QUEUED", "RUNNING"):
@@ -167,9 +179,13 @@ def run_custom_query(
             if return_id:
                 return response["QueryExecutionId"]
             else:
-                data = athena.get_query_results(
-                    QueryExecutionId=response["QueryExecutionId"], MaxResults=1000
-                )
+                try:
+                    data = athena.get_query_results(
+                        QueryExecutionId=response["QueryExecutionId"], MaxResults=1000
+                    )
+                except (botocore.exceptions.BotoCoreError, botocore.exceptions.ClientError) as error:
+                    print(f"Athena get_query_results failed: {error}")
+                    return None
                 if queue is not None:
                     return queue.put(data["ResultSet"]["Rows"])
                 else:
