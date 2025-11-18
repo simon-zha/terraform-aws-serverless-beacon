@@ -122,8 +122,6 @@ jobs:
       TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
       # Change flags retrieved from the 'changes' job (for conditional step execution)
       PIPELINE_CODE_CHANGED: ${{ needs.changes.outputs.code_changed }}
-      PIPELINE_TERRAFORM_CHANGED: ${{ needs.changes.outputs.terraform_changed }}
-
     steps:
       # Step 1: Check out repository, fetch full code and config files
       - name: Checkout
@@ -316,7 +314,7 @@ jobs:
 
           # Exit with error if image digests are empty or not found (run Promote RC to Stable first)
           if [ -z "$A_DIGEST" ] || [ "$A_DIGEST" = "None" ] || [ -z "$B_DIGEST" ] || [ "$B_DIGEST" = "None" ]; then
-            echo "::error::Stable images not found in PROD ECR for tag '$TAG'. Run the 'Promote RC to Stable & Release' workflow first to copy/retag images from STAGING -> PROD."
+            echo "::error::Stable images not found in PROD ECR for tag '$TAG'. Run the 'Promote RC to Stable & Release' workflow first.";
             exit 1
           fi
 
@@ -405,7 +403,7 @@ jobs:
 
       # Step 22: Terraform plan (preview deployment changes without actual resource operations)
       - name: Terraform Plan
-        id: plan
+        id: terraform_plan
         run: |
           # Generate execution plan and save to file (-out=tfplan), lock timeout 10 minutes
           terraform -chdir=${{ env.TF_WORKING_DIR }} plan -input=false -lock-timeout=10m -out=tfplan
