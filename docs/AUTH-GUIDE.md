@@ -64,3 +64,5 @@ Use either `admin_login_command` or `guest_login_command` to retrieve the **IdTo
 ## How API security works
 
 There are three groups of users `record-access-user-group`, `count-access-user-group` and `boolean-access-user-group`. Admin user belons to all three groups while guest has only **counts** and **boolean** access. Adding new users must be done using the Cognito User Pool as an administrator. Alternatively, infrastructure can be modified to support alternative authentication flows.
+
+When deploying multiple environments (for example via Terraform workspaces), each group name gains an environment suffix such as `boolean-access-user-group-staging`. The API recognises both the base name and the suffix variant, so make sure any manually created users are added to the suffixed groups for their target environment.
