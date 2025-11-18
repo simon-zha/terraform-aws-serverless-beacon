@@ -33,6 +33,7 @@ class Result:
     ok: bool
     skipped: bool
     message: str
+    duration_ms: Optional[float]
 
 
 def parse_paths_file(path: Path) -> List[Endpoint]:
@@ -65,7 +66,8 @@ def build_url(base_url: str, path: str) -> str:
     return f"{base}/{suffix}"
 
 
-def http_get(url: str, token: Optional[str], timeout: float) -> Tuple[int, str]:
+def http_get(url: str, token: Optional[str], timeout: float) -> Tuple[int, str, float]:
+    start = time.perf_counter()
     headers = {"User-Agent": USER_AGENT}
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -76,7 +78,8 @@ def http_get(url: str, token: Optional[str], timeout: float) -> Tuple[int, str]:
             body = resp.read().decode("utf-8", errors="replace")
         except Exception:
             body = "<binary>"
-        return status, body[:2000]
+        duration_ms = (time.perf_counter() - start) * 1000.0
+        return status, body[:2000], duration_ms
 
 
 def run_check(
@@ -96,23 +99,27 @@ def run_check(
             ok=False,
             skipped=True,
             message="Authentication required but no token provided",
+            duration_ms=None,
         )
 
     attempt = 0
     delay = 1.0
     last_error = ""
     status_code: Optional[int] = None
+    duration_ms: Optional[float] = None
 
     while attempt < retries:
         attempt += 1
+        start = time.perf_counter()
         try:
-            status_code, body_preview = http_get(url, token, timeout)
+            status_code, body_preview, duration_ms = http_get(url, token, timeout)
             ok = status_code == endpoint.expected_status
             message = (
                 f"Status {status_code} (expected {endpoint.expected_status})"
                 if ok
                 else f"Unexpected status {status_code} (expected {endpoint.expected_status}); body preview: {body_preview}"
             )
+            print(f"[smoke] {'PASS' if ok else 'FAIL'} {endpoint.path}: {message} ({duration_ms:.1f} ms)")
             return Result(
                 endpoint=endpoint,
                 url=url,
@@ -120,20 +127,25 @@ def run_check(
                 ok=ok,
                 skipped=False,
                 message=message,
+                duration_ms=duration_ms,
             )
         except urllib.error.HTTPError as exc:
             status_code = exc.code
             body = exc.read().decode("utf-8", errors="replace")
+            duration_ms = (time.perf_counter() - start) * 1000.0
             last_error = f"HTTPError {exc.code}: {exc.reason}; body preview: {body[:2000]}"
         except urllib.error.URLError as exc:
+            duration_ms = (time.perf_counter() - start) * 1000.0
             last_error = f"URLError: {exc.reason}"
         except Exception as exc:  # pragma: no cover - defensive
+            duration_ms = (time.perf_counter() - start) * 1000.0
             last_error = f"Error: {exc}"
 
         if attempt < retries:
             time.sleep(delay)
             delay *= backoff
 
+    print(f"[smoke] FAIL {endpoint.path}: {last_error}")
     return Result(
         endpoint=endpoint,
         url=url,
@@ -141,6 +153,7 @@ def run_check(
         ok=False,
         skipped=False,
         message=last_error or "Unknown error",
+        duration_ms=duration_ms,
     )
 
 
@@ -166,6 +179,7 @@ def write_json(results: List[Result], path: Path) -> None:
             "ok": res.ok,
             "skipped": res.skipped,
             "message": res.message,
+            "duration_ms": res.duration_ms,
         }
         for res in results
     ]
@@ -177,6 +191,10 @@ def write_markdown(results: List[Result], path: Path) -> None:
     passed = sum(1 for r in results if r.ok)
     failed = sum(1 for r in results if not r.ok and not r.skipped)
     skipped = sum(1 for r in results if r.skipped)
+    latencies = [r.duration_ms for r in results if r.duration_ms is not None]
+    avg_latency = f"{sum(latencies) / len(latencies):.1f}" if latencies else "N/A"
+    max_latency = f"{max(latencies):.1f}" if latencies else "N/A"
+
     lines = [
         "### API Smoke Test Report",
         "",
@@ -184,13 +202,19 @@ def write_markdown(results: List[Result], path: Path) -> None:
         f"- Passed: {passed}",
         f"- Failed: {failed}",
         f"- Skipped: {skipped}",
+        f"- Average latency (ms): {avg_latency}",
+        f"- Max latency (ms): {max_latency}",
         "",
-        "| Path | Status | Message |",
-        "| --- | --- | --- |",
+        "| Path | Status | Status Code | Latency (ms) | Message |",
+        "| --- | --- | --- | --- | --- |",
     ]
     for res in results:
         status = "PASS" if res.ok else ("SKIPPED" if res.skipped else "FAIL")
-        lines.append(f"| `{res.endpoint.path}` | {status} | {res.message.replace('|', '\\|')} |")
+        latency = f"{res.duration_ms:.1f}" if res.duration_ms is not None else "-"
+        code = res.status_code if res.status_code is not None else "-"
+        lines.append(
+            f"| `{res.endpoint.path}` | {status} | {code} | {latency} | {res.message.replace('|', '\|')} |"
+        )
     path.write_text("\n".join(lines) + "\n")
 
 
@@ -204,6 +228,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="Per-request timeout in seconds")
     parser.add_argument("--retries", type=int, default=DEFAULT_RETRIES, help="Retries per endpoint")
     parser.add_argument("--backoff", type=float, default=DEFAULT_BACKOFF, help="Backoff multiplier between retries")
+    parser.add_argument("--expected-status", type=int, default=200, help="Default expected HTTP status code")
     parser.add_argument("--report-json", type=Path, help="Path to write JSON report")
     parser.add_argument("--report-md", type=Path, help="Path to write Markdown report")
 
@@ -215,11 +240,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"[smoke] configuration error: {exc}", file=sys.stderr)
         return 1
 
+    # apply default expected status if paths did not override
+    for ep in endpoints:
+        if ep.expected_status == 200 and args.expected_status != 200:
+            ep.expected_status = args.expected_status
+
     results: List[Result] = []
     for ep in endpoints:
         res = run_check(ep, args.base_url, args.bearer_token, args.timeout, args.retries, args.backoff)
-        status = "PASS" if res.ok else ("SKIPPED" if res.skipped else "FAIL")
-        print(f"[smoke] {status} {ep.path}: {res.message}")
         results.append(res)
 
     if args.report_json:
@@ -240,7 +268,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     if skipped:
         print(f"[smoke] NOTE: {len(skipped)} endpoints skipped (auth/token requirements)", file=sys.stderr)
 
-    # Always exit 0 so workflows can continue.
     return 0
 
 

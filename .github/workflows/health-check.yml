@@ -57,6 +57,7 @@ jobs:
       ENV_NAME: ${{ matrix.environment_name }}
       WORKSPACE: ${{ matrix.workspace }}
       BACKEND_CONFIG: ${{ matrix.backend_config }}
+      PATHS_FILE: scripts/smoke_paths.txt
       AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
       EXPECTED_STATUS: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.expected_status) || '200' }}
       RETRIES: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.retries) || '6' }}
@@ -80,7 +81,7 @@ jobs:
         run: |
           {
             echo "### [SKIP] - ${ENV_NAME}"
-            echo "- Reason: Not within the scope of this execution"
+            echo "- Reason: not selected for this execution."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Checkout repository
@@ -143,17 +144,47 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
+          mkdir -p reports
           extra=()
           if [ -n "${BEARER_TOKEN:-}" ]; then
             extra+=(--bearer-token "${BEARER_TOKEN}")
           fi
-          python scripts/health_check.py \
-            --url "${API_URL}" \
+          python scripts/api_smoke_report.py \
+            --base-url "${API_URL}" \
+            --paths-file "${PATHS_FILE}" \
             --expected-status "${EXPECTED_STATUS}" \
             --retries "${RETRIES}" \
             --timeout "${TIMEOUT}" \
             --backoff "${BACKOFF}" \
+            --report-json "reports/${ENV_NAME}_health.json" \
+            --report-md "reports/${ENV_NAME}_health.md" \
             "${extra[@]}"
+
+      - name: Upload reports
+        if: steps.gate.outputs.run == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: health-check-${{ env.ENV_NAME }}-${{ github.run_id }}
+          path: reports/
+
+      - name: Append result to summary
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          status="${{ steps.health.outcome }}"
+          if [ "$status" = "success" ]; then
+            prefix="[PASS]"
+          else
+            prefix="[FAIL]"
+          fi
+          {
+            echo "### ${prefix} - ${ENV_NAME}"
+            echo "- URL: ${API_URL}"
+            echo "- Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            if [ -f reports/${ENV_NAME}_health.md ]; then
+              echo ""
+              cat reports/${ENV_NAME}_health.md
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Report failure via issue
         if: steps.gate.outputs.run == 'true' && steps.health.outcome == 'failure'
@@ -197,18 +228,3 @@ jobs:
               });
             }
             core.setFailed(`Health check failed for ${envName}`);
-
-      - name: Append result to summary
-        if: steps.gate.outputs.run == 'true'
-        run: |
-          status="${{ steps.health.outcome }}"
-          if [ "$status" = "success" ]; then
-            prefix="[PASS]"
-          else
-            prefix="[FAIL]"
-          fi
-          {
-            echo "### ${prefix} - ${ENV_NAME}"
-            echo "- URL: ${API_URL}"
-            echo "- Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          } >> "$GITHUB_STEP_SUMMARY"
