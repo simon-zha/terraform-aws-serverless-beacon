@@ -227,7 +227,7 @@ jobs:
             name="sbeacon-${REPO_WORKSPACE}-${kind}-lambda-containers"
             addr="${MODULE_ADDRS[$kind]}"
 
-            if ! terraform -chdir="${TF_DIR}" state show "$addr" >/dev/null 2&>1; then
+            if ! terraform -chdir="${TF_DIR}" state show "$addr" >/dev/null 2>&1; then
               echo "Importing $name into Terraform state"
               terraform -chdir="${TF_DIR}" import "$addr" "$name"
             else
@@ -413,6 +413,7 @@ jobs:
     outputs:
       apply_flag: ${{ steps.flags.outputs.apply_flag }}
       destroy_flag: ${{ steps.flags.outputs.destroy_flag }}
+      lambda_artifact: ${{ steps.lambda_artifact.outputs.lambda_artifact }}
     env:
       AWS_REGION: ${{ (github.event_name == 'workflow_dispatch' && inputs.aws_region) || vars.AWS_REGION || 'ap-southeast-2' }}
       TF_WORKING_DIR: ${{ github.workspace }}/environments
@@ -564,6 +565,11 @@ jobs:
           name: dev-tfplan-binary-${{ github.run_id }}
           path: ${{ env.TF_WORKING_DIR }}/tfplan
 
+      - name: Record lambda artifact name
+        id: lambda_artifact
+        run: |
+          echo "lambda_artifact=${LAMBDA_BUILD_ARTIFACT}" >> "$GITHUB_OUTPUT"
+
       - name: Record apply/destroy flags
         id: flags
         run: |
@@ -672,7 +678,7 @@ jobs:
       - name: Download lambda build plans
         uses: actions/download-artifact@v4
         with:
-          name: ${{ env.LAMBDA_BUILD_ARTIFACT }}
+          name: ${{ needs.terraform-plan.outputs.lambda_artifact }}
           path: .
 
       - name: Terraform Init
