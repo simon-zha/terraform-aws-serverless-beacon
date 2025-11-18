@@ -437,7 +437,6 @@ jobs:
     outputs:
       apply_flag: 'true'
       destroy_flag: 'false'
-      lambda_artifact: ${{ steps.lambda_artifact.outputs.lambda_artifact }}
     env:
       AWS_REGION: ap-southeast-2
       TF_WORKING_DIR: ${{ github.workspace }}/environments
@@ -588,11 +587,6 @@ jobs:
           name: staging-tfplan-binary-${{ github.run_id }}
           path: ${{ env.TF_WORKING_DIR }}/tfplan
 
-      - name: Record lambda artifact name
-        id: lambda_artifact
-        run: |
-          echo "lambda_artifact=${LAMBDA_BUILD_ARTIFACT}" >> "$GITHUB_OUTPUT"
-
   terraform-apply:
     name: Terraform apply
     needs:
@@ -672,7 +666,7 @@ jobs:
       - name: Download lambda build plans
         uses: actions/download-artifact@v4
         with:
-          name: ${{ needs.terraform-plan.outputs.lambda_artifact }}
+          name: ${{ env.LAMBDA_BUILD_ARTIFACT }}
           path: .
 
       - name: Terraform Init
