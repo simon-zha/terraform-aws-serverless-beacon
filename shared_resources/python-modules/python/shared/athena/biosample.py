@@ -3,12 +3,15 @@ from collections import defaultdict
 
 import boto3
 import jsons
-import pyorc
 from smart_open import open as sopen
 
 from .common import AthenaModel, extract_terms
 from shared.utils import ENV_ATHENA
 
+try:
+    import pyorc  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    pyorc = None
 
 s3 = boto3.client("s3")
 athena = boto3.client("athena")
@@ -97,6 +100,10 @@ class Biosample(jsons.JsonSerializable, AthenaModel):
 
     @classmethod
     def upload_array(cls, array):
+        if pyorc is None:
+            raise RuntimeError(
+                "pyorc dependency is required for Biosample.upload_array but is not installed."
+            )
         if len(array) == 0:
             return
         header_entity = (
