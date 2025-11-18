@@ -576,29 +576,11 @@ jobs:
         if: always()
         run: rm -f ${{ env.TF_WORKING_DIR }}/tfplan
 
-  manual-approval:
-    name: Await approval
-    needs: terraform-plan
-    if: needs.terraform-plan.outputs.apply_flag == 'true'
-    runs-on: ubuntu-latest
-    env:
-      TARGET_WORKSPACE: ${{ (github.event_name == 'workflow_dispatch' && inputs.workspace) || 'dev' }}
-    steps:
-      - uses: trstringer/manual-approval@v1
-        with:
-          approvers: ${{ github.actor }}
-          secret: ${{ secrets.GITHUB_TOKEN }}
-          issue-title: 'Manual approval for dev apply'
-          issue-body: 'Approve Terraform apply for workspace `${{ env.TARGET_WORKSPACE }}`'
-          exclude-workflow-initiator-as-approver: false
-          fail-on-denial: true
-
   terraform-apply:
     name: Terraform apply
     needs:
       - terraform-plan
-      - manual-approval
-    if: needs.terraform-plan.outputs.apply_flag == 'true' && needs.manual-approval.result == 'success'
+    if: needs.terraform-plan.outputs.apply_flag == 'true'
     runs-on: ubuntu-latest
     environment: dev
     env:
