@@ -104,6 +104,10 @@ jobs:
           persist-credentials: true
           ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
 
+      - name: Configure git auth for fetch/push
+        run: |
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -798,6 +802,10 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
           ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+
+      - name: Configure git auth for push
+        run: |
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
 
       - name: Configure git
         run: |
