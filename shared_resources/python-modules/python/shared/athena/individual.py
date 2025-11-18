@@ -1,7 +1,6 @@
 import json
 from collections import defaultdict
 
-import pyorc
 import jsons
 import boto3
 from smart_open import open as sopen
@@ -9,6 +8,10 @@ from smart_open import open as sopen
 from .common import AthenaModel, extract_terms
 from shared.utils import ENV_ATHENA
 
+try:
+    import pyorc  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    pyorc = None
 
 s3 = boto3.client("s3")
 athena = boto3.client("athena")
@@ -76,6 +79,10 @@ class Individual(jsons.JsonSerializable, AthenaModel):
 
     @classmethod
     def upload_array(cls, array):
+        if pyorc is None:
+            raise RuntimeError(
+                "pyorc dependency is required for Individual.upload_array but is not installed."
+            )
         if len(array) == 0:
             return
         header_entity = (
