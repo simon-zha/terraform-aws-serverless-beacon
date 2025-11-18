@@ -31,6 +31,7 @@ CURIE_REGEX = r"^\w[^:]+:.+$"
 BEACON_API_VERSION = ENV_BEACON.BEACON_API_VERSION
 BEACON_DEFAULT_GRANULARITY = ENV_BEACON.BEACON_DEFAULT_GRANULARITY
 BEACON_ENABLE_AUTH = ENV_BEACON.BEACON_ENABLE_AUTH
+BEACON_ENVIRONMENT = ENV_BEACON.BEACON_ENVIRONMENT
 CONFIG_MAX_VARIANT_SEARCH_BASE_RANGE = ENV_CONFIG.CONFIG_MAX_VARIANT_SEARCH_BASE_RANGE
 
 
@@ -268,17 +269,26 @@ def parse_request(event) -> Tuple[RequestParams, str]:
             .get("claims", dict())
             .get("cognito:groups", "unauthorized")
         )
-        groups = groups.split(",")
-        authorized = (
-            f"{request_params.query.requested_granularity}-access-user-group" in groups
+        groups = [group.strip() for group in groups.split(",")]
+        base_group_name = (
+            f"{request_params.query.requested_granularity}-access-user-group"
         )
+        env_suffix = BEACON_ENVIRONMENT.strip()
+        expected_group_names = {base_group_name}
+        if env_suffix:
+            expected_group_names.add(f"{base_group_name}-{env_suffix}")
+
+        authorized = any(group_name in groups for group_name in expected_group_names)
 
         # return unauthorized status
         if not authorized:
             return (
                 None,
                 {
-                    "anauthorized_access": f"User does not belong to {request_params.query.requested_granularity}-access-user-group"
+                    "anauthorized_access": (
+                        "User does not belong to any of the required groups "
+                        f"{', '.join(sorted(expected_group_names))}"
+                    )
                 },
                 400,
             )
