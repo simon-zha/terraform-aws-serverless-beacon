@@ -678,13 +678,15 @@ jobs:
               EXTRA+=(--bearer-token "${token}")
             fi
           fi
-          python scripts/health_check.py \
-            --url "${SMOKE_URL}" \
+          python scripts/api_smoke_report.py \
+            --base-url "${SMOKE_URL}" \
+            --paths-file scripts/smoke_paths.txt \
             --expected-status 200 \
             --retries 5 \
             --timeout 10 \
             --backoff 2 \
-            --paths-file scripts/smoke_paths.txt \
+            --report-json "smoke_report.json" \
+            --report-md "smoke_report.md" \
             "${EXTRA[@]}"
 
   no-deploy:
