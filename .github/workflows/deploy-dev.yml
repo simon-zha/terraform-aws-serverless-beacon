@@ -150,6 +150,18 @@ jobs:
         working-directory: lambda/askbeacon
         run: python docker_prep.py
 
+      - name: Normalize workspace name for ECR
+        run: |
+          set -euo pipefail
+          safe=$(printf '%s' "${TARGET_WORKSPACE}" | tr '[:upper:]' '[:lower:]')
+          safe=$(printf '%s' "${safe}" | sed -E 's/[^a-z0-9._-]+/-/g')
+          safe=$(printf '%s' "${safe}" | sed -E 's/^-+//; s/-+$//; s/-{2,}/-/g')
+          if [ -z "${safe}" ]; then
+            echo "::error::Normalized workspace name is empty." >&2
+            exit 1
+          fi
+          echo "WORKSPACE_SAFE=${safe}" >> "$GITHUB_ENV"
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -167,6 +179,7 @@ jobs:
           REGION="${{ env.AWS_REGION }}"
           WORKSPACE="${TARGET_WORKSPACE}"
           TF_DIR="${TF_WORKING_DIR}"
+          REPO_WORKSPACE="${WORKSPACE_SAFE:-${WORKSPACE}}"
 
           terraform -chdir="${TF_DIR}" init -input=false -backend-config="${TF_BACKEND_CONFIG}"
           terraform -chdir="${TF_DIR}" workspace select "${WORKSPACE}" \
@@ -180,7 +193,7 @@ jobs:
           )
 
           for kind in analytics askbeacon; do
-            repo="sbeacon-${WORKSPACE}-${kind}-lambda-containers"
+            repo="sbeacon-${REPO_WORKSPACE}-${kind}-lambda-containers"
 
             if ! aws ecr describe-repositories --repository-names "$repo" --region "$REGION" >/dev/null 2>&1; then
               echo "Creating ECR repo: $repo"
@@ -211,7 +224,7 @@ jobs:
               echo "ECR repo exists: $repo"
             fi
 
-            name="sbeacon-${WORKSPACE}-${kind}-lambda-containers"
+            name="sbeacon-${REPO_WORKSPACE}-${kind}-lambda-containers"
             addr="${MODULE_ADDRS[$kind]}"
 
             if ! terraform -chdir="${TF_DIR}" state show "$addr" >/dev/null 2>&1; then
@@ -246,7 +259,7 @@ jobs:
           context: ./lambda/analytics
           push: true
           tags: |
-            ${{ steps.ecr.outputs.registry }}/sbeacon-${{ env.TARGET_WORKSPACE }}-analytics-lambda-containers:${{ env.IMAGE_TAG }}
+            ${{ steps.ecr.outputs.registry }}/sbeacon-${{ env.WORKSPACE_SAFE }}-analytics-lambda-containers:${{ env.IMAGE_TAG }}
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache-new
 
@@ -256,7 +269,7 @@ jobs:
         continue-on-error: true
         uses: aquasecurity/trivy-action@0.24.0
         with:
-          image-ref: ${{ steps.ecr.outputs.registry }}/sbeacon-${{ env.TARGET_WORKSPACE }}-analytics-lambda-containers:${{ env.IMAGE_TAG }}
+          image-ref: ${{ steps.ecr.outputs.registry }}/sbeacon-${{ env.WORKSPACE_SAFE }}-analytics-lambda-containers:${{ env.IMAGE_TAG }}
           format: 'table'
           output: 'trivy-analytics.txt'
           vuln-type: 'os,library'
@@ -287,7 +300,7 @@ jobs:
           context: ./lambda/askbeacon
           push: true
           tags: |
-            ${{ steps.ecr.outputs.registry }}/sbeacon-${{ env.TARGET_WORKSPACE }}-askbeacon-lambda-containers:${{ env.IMAGE_TAG }}
+            ${{ steps.ecr.outputs.registry }}/sbeacon-${{ env.WORKSPACE_SAFE }}-askbeacon-lambda-containers:${{ env.IMAGE_TAG }}
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache-new
 
@@ -297,7 +310,7 @@ jobs:
         continue-on-error: true
         uses: aquasecurity/trivy-action@0.24.0
         with:
-          image-ref: ${{ steps.ecr.outputs.registry }}/sbeacon-${{ env.TARGET_WORKSPACE }}-askbeacon-lambda-containers:${{ env.IMAGE_TAG }}
+          image-ref: ${{ steps.ecr.outputs.registry }}/sbeacon-${{ env.WORKSPACE_SAFE }}-askbeacon-lambda-containers:${{ env.IMAGE_TAG }}
           format: 'table'
           output: 'trivy-askbeacon.txt'
           vuln-type: 'os,library'
@@ -343,6 +356,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${IMAGE_TAG}"
+          REPO_WORKSPACE="${WORKSPACE_SAFE:-${TARGET_WORKSPACE}}"
 
           get_digest () {
             local repo="$1"
@@ -353,11 +367,11 @@ jobs:
               --output text
           }
 
-          ANALYTICS_REPO="sbeacon-${TARGET_WORKSPACE}-analytics-lambda-containers"
-          ASKBEACON_REPO="sbeacon-${TARGET_WORKSPACE}-askbeacon-lambda-containers"
+          ANALYTICS_REPO="sbeacon-${REPO_WORKSPACE}-analytics-lambda-containers"
+          ASKBEACON_REPO="sbeacon-${REPO_WORKSPACE}-askbeacon-lambda-containers"
 
-          ANALYTICS_DIGEST="$(get_digest \"$ANALYTICS_REPO\")"
-          ASKBEACON_DIGEST="$(get_digest \"$ASKBEACON_REPO\")"
+          ANALYTICS_DIGEST="$(get_digest "$ANALYTICS_REPO")"
+          ASKBEACON_DIGEST="$(get_digest "$ASKBEACON_REPO")"
 
           if [ -z "$ANALYTICS_DIGEST" ] || [ "$ANALYTICS_DIGEST" = "None" ]; then
             echo "::error::analytics image not found for tag $TAG"; exit 1
@@ -374,15 +388,16 @@ jobs:
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
           REG="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          REPO_WORKSPACE="${WORKSPACE_SAFE:-${TARGET_WORKSPACE}}"
 
           if [ -n "${ANALYTICS_DIGEST:-}" ]; then
-            echo "analytics_image_uri=${REG}/sbeacon-${TARGET_WORKSPACE}-analytics-lambda-containers@${ANALYTICS_DIGEST}" >> "$GITHUB_OUTPUT"
+            echo "analytics_image_uri=${REG}/sbeacon-${REPO_WORKSPACE}-analytics-lambda-containers@${ANALYTICS_DIGEST}" >> "$GITHUB_OUTPUT"
           else
             echo "analytics_image_uri=" >> "$GITHUB_OUTPUT"
           fi
 
           if [ -n "${ASKBEACON_DIGEST:-}" ]; then
-            echo "askbeacon_image_uri=${REG}/sbeacon-${TARGET_WORKSPACE}-askbeacon-lambda-containers@${ASKBEACON_DIGEST}" >> "$GITHUB_OUTPUT"
+            echo "askbeacon_image_uri=${REG}/sbeacon-${REPO_WORKSPACE}-askbeacon-lambda-containers@${ASKBEACON_DIGEST}" >> "$GITHUB_OUTPUT"
           else
             echo "askbeacon_image_uri=" >> "$GITHUB_OUTPUT"
           fi
@@ -420,6 +435,38 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Normalize workspace name for assets
+        run: |
+          set -euo pipefail
+          safe=$(printf '%s' "${TARGET_WORKSPACE}" | tr '[:upper:]' '[:lower:]')
+          safe=$(printf '%s' "${safe}" | sed -E 's/[^a-z0-9._-]+/-/g')
+          safe=$(printf '%s' "${safe}" | sed -E 's/^-+//; s/-+$//; s/-{2,}/-/g')
+          if [ -z "${safe}" ]; then
+            echo "::error::Normalized workspace name is empty." >&2
+            exit 1
+          fi
+          echo "WORKSPACE_SAFE=${safe}" >> "$GITHUB_ENV"
+          echo "LAMBDA_BUILD_ARTIFACT=lambda-build-plans-${safe}-${GITHUB_RUN_ID}" >> "$GITHUB_ENV"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential autoconf automake libtool pkg-config zlib1g-dev libcurl4-openssl-dev libbz2-dev liblzma-dev
+
+      - name: Run init script
+        run: |
+          set -euo pipefail
+          chmod +x ./init.sh
+          ./init.sh
+
+      - name: Prepare build directories
+        run: mkdir -p builds
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -498,6 +545,13 @@ jobs:
           terraform -chdir=${{ env.TF_WORKING_DIR }} plan -input=false -lock-timeout=10m -out=tfplan
           terraform -chdir=${{ env.TF_WORKING_DIR }} show -no-color tfplan > ${{ env.TF_WORKING_DIR }}/tfplan.txt
 
+      - name: Upload lambda build plans
+        if: steps.terraform_plan.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.LAMBDA_BUILD_ARTIFACT }}
+          path: builds
+
       - name: Upload plan (text)
         uses: actions/upload-artifact@v4
         with:
@@ -557,6 +611,38 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Normalize workspace name for assets
+        run: |
+          set -euo pipefail
+          safe=$(printf '%s' "${TARGET_WORKSPACE}" | tr '[:upper:]' '[:lower:]')
+          safe=$(printf '%s' "${safe}" | sed -E 's/[^a-z0-9._-]+/-/g')
+          safe=$(printf '%s' "${safe}" | sed -E 's/^-+//; s/-+$//; s/-{2,}/-/g')
+          if [ -z "${safe}" ]; then
+            echo "::error::Normalized workspace name is empty." >&2
+            exit 1
+          fi
+          echo "WORKSPACE_SAFE=${safe}" >> "$GITHUB_ENV"
+          echo "LAMBDA_BUILD_ARTIFACT=lambda-build-plans-${safe}-${GITHUB_RUN_ID}" >> "$GITHUB_ENV"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential autoconf automake libtool pkg-config zlib1g-dev libcurl4-openssl-dev libbz2-dev liblzma-dev
+
+      - name: Run init script
+        run: |
+          set -euo pipefail
+          chmod +x ./init.sh
+          ./init.sh
+
+      - name: Prepare build directories
+        run: mkdir -p builds
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -582,6 +668,12 @@ jobs:
         with:
           name: dev-tfplan-binary-${{ github.run_id }}
           path: ${{ env.TF_WORKING_DIR }}
+
+      - name: Download lambda build plans
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.LAMBDA_BUILD_ARTIFACT }}
+          path: .
 
       - name: Terraform Init
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} init -input=false -upgrade -backend-config=${{ env.TF_BACKEND_CONFIG }}

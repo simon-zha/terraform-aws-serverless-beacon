@@ -327,6 +327,38 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Normalize workspace name for assets
+        run: |
+          set -euo pipefail
+          safe=$(printf '%s' "${TARGET_WORKSPACE}" | tr '[:upper:]' '[:lower:]')
+          safe=$(printf '%s' "${safe}" | sed -E 's/[^a-z0-9._-]+/-/g')
+          safe=$(printf '%s' "${safe}" | sed -E 's/^-+//; s/-+$//; s/-{2,}/-/g')
+          if [ -z "${safe}" ]; then
+            echo "::error::Normalized workspace name is empty." >&2
+            exit 1
+          fi
+          echo "WORKSPACE_SAFE=${safe}" >> "$GITHUB_ENV"
+          echo "LAMBDA_BUILD_ARTIFACT=lambda-build-plans-${safe}-${GITHUB_RUN_ID}" >> "$GITHUB_ENV"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential autoconf automake libtool pkg-config zlib1g-dev libcurl4-openssl-dev libbz2-dev liblzma-dev
+
+      - name: Run init script
+        run: |
+          set -euo pipefail
+          chmod +x ./init.sh
+          ./init.sh
+
+      - name: Prepare build directories
+        run: mkdir -p builds
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -397,9 +429,17 @@ jobs:
           exit 1
 
       - name: Terraform Plan
+        id: terraform_plan
         run: |
           terraform -chdir=${{ env.TF_WORKING_DIR }} plan -input=false -lock-timeout=10m -out=tfplan
           terraform -chdir=${{ env.TF_WORKING_DIR }} show -no-color tfplan > ${{ env.TF_WORKING_DIR }}/tfplan.txt
+
+      - name: Upload lambda build plans
+        if: steps.terraform_plan.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.LAMBDA_BUILD_ARTIFACT }}
+          path: builds
 
       - name: Upload plan (text)
         uses: actions/upload-artifact@v4
@@ -449,6 +489,38 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Normalize workspace name for assets
+        run: |
+          set -euo pipefail
+          safe=$(printf '%s' "${TARGET_WORKSPACE}" | tr '[:upper:]' '[:lower:]')
+          safe=$(printf '%s' "${safe}" | sed -E 's/[^a-z0-9._-]+/-/g')
+          safe=$(printf '%s' "${safe}" | sed -E 's/^-+//; s/-+$//; s/-{2,}/-/g')
+          if [ -z "${safe}" ]; then
+            echo "::error::Normalized workspace name is empty." >&2
+            exit 1
+          fi
+          echo "WORKSPACE_SAFE=${safe}" >> "$GITHUB_ENV"
+          echo "LAMBDA_BUILD_ARTIFACT=lambda-build-plans-${safe}-${GITHUB_RUN_ID}" >> "$GITHUB_ENV"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential autoconf automake libtool pkg-config zlib1g-dev libcurl4-openssl-dev libbz2-dev liblzma-dev
+
+      - name: Run init script
+        run: |
+          set -euo pipefail
+          chmod +x ./init.sh
+          ./init.sh
+
+      - name: Prepare build directories
+        run: mkdir -p builds
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -474,6 +546,12 @@ jobs:
         with:
           name: prod-tfplan-binary-${{ github.run_id }}
           path: ${{ env.TF_WORKING_DIR }}
+
+      - name: Download lambda build plans
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.LAMBDA_BUILD_ARTIFACT }}
+          path: .
 
       - name: Terraform Init
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} init -input=false -upgrade -backend-config=${{ env.TF_BACKEND_CONFIG }}
