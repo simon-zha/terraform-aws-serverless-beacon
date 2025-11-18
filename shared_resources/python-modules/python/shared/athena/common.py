@@ -49,12 +49,12 @@ class AthenaModel:
             query, queue=None, execution_parameters=execution_parameters
         )
 
-        if not len(result) > 0:
-            return []
-        elif queue is None:
-            return len(result) > 1
-        else:
-            queue.put(len(result) > 1)
+        if not result:
+            return False
+        outcome = len(result) > 1
+        if queue is None:
+            return outcome
+        queue.put(outcome)
 
     @classmethod
     def parse_array(cls, exec_id):
@@ -89,12 +89,12 @@ class AthenaModel:
             query, queue=None, execution_parameters=execution_parameters
         )
 
-        if not len(result) > 0:
-            return []
-        elif queue is None:
-            return int(result[1]["Data"][0]["VarCharValue"])
-        else:
-            queue.put(int(result[1]["Data"][0]["VarCharValue"]))
+        if not result:
+            return 0
+        value = int(result[1]["Data"][0]["VarCharValue"])
+        if queue is None:
+            return value
+        queue.put(value)
 
 
 def extract_terms(array):
