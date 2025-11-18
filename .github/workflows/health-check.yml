@@ -1,217 +1,170 @@
-# .github/workflows/health-check.yml
 name: API Health Check
+
 on:
-  workflow_dispatch:  # Trigger 1: Manual trigger (supports custom inputs)
+  workflow_dispatch:
     inputs:
       environment:
         description: "Environment to check (dev/staging/prod/all)"
         required: false
-        default: "all"  # Default: check all environments
+        default: "all"
       expected_status:
         description: "Expected HTTP status code"
         required: false
-        default: "200"  # Default
+        default: "200"
       retries:
-        description: "Maximum retry attempts"
+        description: "Maximum number of retries"
         required: false
-        default: "6"  # Default
+        default: "6"
       timeout:
-        description: "Per-request timeout in seconds"
+        description: "Timeout for single request (seconds)"
         required: false
-        default: "8"  # Default
+        default: "8"
       backoff:
         description: "Exponential backoff multiplier"
         required: false
-        default: "2"  # Default
-  schedule:  # Trigger 2: Scheduled trigger
-    - cron: "20 * * * *"  # Run at 20th minute of every hour
+        default: "2"
+  schedule:
+    - cron: "20 * * * *"
 
-# Permission configuration: GitHub permissions required for the workflow
 permissions:
-  contents: read  # Read repository contents
-  actions: read  # Read workflow information
-  id-token: write  # Write identity token (for AWS authentication)
-  issues: write  # Create/comment on GitHub Issues
+  contents: read
+  actions: read
+  id-token: write
+  issues: write
 
 jobs:
   health-check:
     name: Check ${{ matrix.environment_name }} API
-    runs-on: ubuntu-latest  # Run environment: Latest Ubuntu
+    runs-on: ubuntu-latest
     strategy:
-      fail-fast: false  # Non-fast fail (one environment failure won't stop others)
+      fail-fast: false
       matrix:
-        include:  # Multi-environment matrix configuration (environment-specific params)
-          - environment_name: dev  # Env name: Development
-            github_environment: dev  # Associated GitHub environment
-            workspace: dev  # Corresponding Terraform workspace
-            ssm_parameter: /serverless-beacon/dev/api_url  # AWS SSM parameter for API URL
+        include:
+          - environment_name: dev
+            github_environment: dev
+            workspace: dev
+            backend_config: backend-dev.hcl
           - environment_name: staging
             github_environment: staging
             workspace: staging
-            ssm_parameter: /serverless-beacon/staging/api_url
+            backend_config: backend-staging.hcl
           - environment_name: prod
             github_environment: prod
             workspace: prod
-            ssm_parameter: /serverless-beacon/prod/api_url
-    environment: ${{ matrix.github_environment }}  # Bind to corresponding GitHub environment (pre-configured)
+            backend_config: backend-prod.hcl
+    environment: ${{ matrix.github_environment }}
     env:
-      ENV_NAME: ${{ matrix.environment_name }}  # Environment name (from matrix)
-      WORKSPACE: ${{ matrix.workspace }}  # Workspace name
-      SSM_PARAMETER: ${{ matrix.ssm_parameter }}  # SSM parameter name
-      API_URL: ""  # Initialize API URL variable (fetched from SSM later)
-      # Env var: Use manual input if available, default to 200
+      ENV_NAME: ${{ matrix.environment_name }}
+      WORKSPACE: ${{ matrix.workspace }}
+      BACKEND_CONFIG: ${{ matrix.backend_config }}
+      AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
       EXPECTED_STATUS: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.expected_status) || '200' }}
-      # Env var: Use manual input if available, default to 6 retries
       RETRIES: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.retries) || '6' }}
-      # Env var: Use manual input if available, default to 8s timeout
       TIMEOUT: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.timeout) || '8' }}
-      # Env var: Use manual input if available, default backoff 2
       BACKOFF: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.backoff) || '2' }}
-      AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-2' }}  # AWS region (repo var first, default to Sydney)
-      # Cognito authentication variables (from GitHub Secrets, optional)
-      COGNITO_USER_POOL_ID: ${{ secrets.COGNITO_USER_POOL_ID || '' }}
-      COGNITO_APP_CLIENT_ID: ${{ secrets.COGNITO_APP_CLIENT_ID || '' }}
-      COGNITO_USERNAME: ${{ secrets.BEACON_GUEST_USERNAME || secrets.BEACON_ADMIN_USERNAME || '' }}
-      COGNITO_PASSWORD: ${{ secrets.BEACON_GUEST_PASSWORD || secrets.BEACON_ADMIN_PASSWORD || '' }}
-      # Run condition: Scheduled = run all; Manual = run selected envs
-      SHOULD_RUN: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.environment == 'all' || github.event.inputs.environment == matrix.environment_name }}
     steps:
-      # Step 1: Skip unselected environments (manual trigger only)
-      - name: Report skip
-        if: env.SHOULD_RUN != 'true'
-        run: echo "Skipping ${ENV_NAME} health check because it was not selected."
-
-      # Step 2: Validate Cognito configuration (if authentication is enabled)
-      - name: Validate Cognito configuration
-        if: env.SHOULD_RUN == 'true'
+      - name: Decide execution
+        id: gate
         run: |
-          # Validate Cognito parameter completeness (User Pool ID and Client ID must exist together)
-          if [ -n "${COGNITO_USER_POOL_ID}" ] && [ -z "${COGNITO_APP_CLIENT_ID}" ]; then
-            echo "::error::COGNITO_USER_POOL_ID is set but COGNITO_APP_CLIENT_ID is missing."
-            exit 1
-          fi
-          if [ -n "${COGNITO_APP_CLIENT_ID}" ] && [ -z "${COGNITO_USER_POOL_ID}" ]; then
-            echo "::error::COGNITO_APP_CLIENT_ID is set but COGNITO_USER_POOL_ID is missing."
-            exit 1
-          fi
-          # Require username/password if Cognito is enabled
-          if [ -n "${COGNITO_USER_POOL_ID}" ] || [ -n "${COGNITO_APP_CLIENT_ID}" ]; then
-            if [ -z "${COGNITO_USERNAME}" ] || [ -z "${COGNITO_PASSWORD}" ]; then
-              echo "::error::Cognito authentication requested but username/password secrets are missing."
-              exit 1
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            target="${{ github.event.inputs.environment }}"
+            if [ "$target" != "all" ] && [ "$target" != "${ENV_NAME}" ]; then
+              echo "run=false" >> "$GITHUB_OUTPUT"
+              exit 0
             fi
           fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
 
-      # Step 3: Check out repository (to access health check script)
+      - name: Skip summary
+        if: steps.gate.outputs.run != 'true'
+        run: |
+          {
+            echo "### [SKIP] - ${ENV_NAME}"
+            echo "- Reason: Not within the scope of this execution"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Checkout repository
-        if: env.SHOULD_RUN == 'true'
+        if: steps.gate.outputs.run == 'true'
         uses: actions/checkout@v4
 
-      # Step 4: Configure AWS credentials (for SSM parameter and Cognito token)
       - name: Configure AWS credentials
-        if: env.SHOULD_RUN == 'true'
+        if: steps.gate.outputs.run == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}  # AWS role ARN from Secrets
-          aws-region: ${{ env.AWS_REGION }}  # Use specified AWS region
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      # Step 5: Resolve API URL from AWS SSM Parameter Store
-      - name: Resolve API URL
-        if: env.SHOULD_RUN == 'true'
+      - name: Setup Terraform
+        if: steps.gate.outputs.run == 'true'
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.4
+
+      - name: Prepare Terraform cache
+        if: steps.gate.outputs.run == 'true'
         run: |
-          set -euo pipefail  # Strict script mode (exit on error)
-          url="${API_URL}"
-          if [ -z "${url}" ]; then
-            tmp_err="$(mktemp)"
-            # Fetch API URL from SSM (with decryption)
-            url=$(aws ssm get-parameter \
-              --name "${SSM_PARAMETER}" \
-              --with-decryption \
-              --region "${AWS_REGION}" \
-              --query 'Parameter.Value' \
-              --output text 2>"${tmp_err}" || true)
-            # Handle fetch failure
-            if [ "${url}" = "None" ]; then
-              url=""
-            fi
-            if [ -z "${url}" ]; then
-              echo "::error::Unable to resolve API URL from parameter ${SSM_PARAMETER}."
-              if [ -s "${tmp_err}" ]; then
-                echo "--- aws ssm get-parameter output ---"
-                cat "${tmp_err}"
-                echo "------------------------------------"
-              fi
-              rm -f "${tmp_err}"
-              exit 1
-            fi
-            rm -f "${tmp_err}"
-          fi
-          echo "Resolved API URL: ${url}"
-          echo "API_URL=${url}" >> $GITHUB_ENV  # Store in env var for later use
+          echo "TF_PLUGIN_CACHE_DIR=$HOME/.terraform.d/plugin-cache" >> $GITHUB_ENV
+          mkdir -p "$HOME/.terraform.d/plugin-cache"
 
-      # Step 6: Obtain Cognito identity token (if Cognito is configured)
-      - name: Obtain Cognito token
-        if: env.SHOULD_RUN == 'true' && env.COGNITO_USER_POOL_ID != '' && env.COGNITO_APP_CLIENT_ID != '' && env.COGNITO_USERNAME != '' && env.COGNITO_PASSWORD != ''
-        id: cognito  # Step ID (for referencing token in later steps)
-        shell: bash
+      - name: Resolve API info from Terraform state
+        if: steps.gate.outputs.run == 'true'
+        id: tf_outputs
         run: |
           set -euo pipefail
-          # Call AWS Cognito API to get authentication token
-          response=$(aws cognito-idp admin-initiate-auth \
-            --user-pool-id "${COGNITO_USER_POOL_ID}" \
-            --region "${AWS_REGION}" \
-            --client-id "${COGNITO_APP_CLIENT_ID}" \
-            --auth-flow ADMIN_USER_PASSWORD_AUTH \
-            --auth-parameters USERNAME="${COGNITO_USERNAME}",PASSWORD="${COGNITO_PASSWORD}")
-          # Parse IdToken (using jq tool)
-          token=$(echo "${response}" | jq -r '.AuthenticationResult.IdToken // empty')
-          if [ -z "${token}" ]; then
-            echo "::error::Failed to obtain Cognito IdToken."
-            exit 1
-          fi
-          echo "token=${token}" >> "$GITHUB_OUTPUT"  # Output to step results
-          echo "BEARER_TOKEN=${token}" >> "$GITHUB_ENV"  # Store in env var
+          TF_DIR="${{ github.workspace }}/environments"
+          terraform -chdir="$TF_DIR" init -input=false -backend-config="${BACKEND_CONFIG}" -reconfigure
+          terraform -chdir="$TF_DIR" workspace select "${WORKSPACE}" >/dev/null 2>&1 || terraform -chdir="$TF_DIR" workspace new "${WORKSPACE}"
+          api_url=$(terraform -chdir="$TF_DIR" output -raw api_url)
+          echo "API_URL=${api_url}" >> $GITHUB_ENV
+          admin_cmd=$(terraform -chdir="$TF_DIR" output -raw admin_login_command || echo "N/A")
+          echo "ADMIN_CMD=${admin_cmd}" >> $GITHUB_ENV
 
-      # Step 7: Set up Python environment (to run health check script)
+      - name: Fetch bearer token (if available)
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          if [ "${ADMIN_CMD}" != "N/A" ] && [ -n "${ADMIN_CMD}" ]; then
+            token=$(eval "${ADMIN_CMD}" | tr -d '"')
+            if [ -n "${token}" ]; then
+              echo "::add-mask::${token}"
+              echo "BEARER_TOKEN=${token}" >> $GITHUB_ENV
+            fi
+          fi
+
       - name: Set up Python
-        if: env.SHOULD_RUN == 'true'
+        if: steps.gate.outputs.run == 'true'
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"  # Specify Python version
+          python-version: "3.12"
 
-      # Step 8: Run API health check
       - name: Run health check
-        if: env.SHOULD_RUN == 'true'
-        id: health  # Step ID (to check outcome later)
-        continue-on-error: true  # Allow failure (handled separately)
+        if: steps.gate.outputs.run == 'true'
+        id: health
+        continue-on-error: true
         run: |
           set -euo pipefail
-          EXTRA_ARGS=()
-          # Add Bearer token to args if available
+          extra=()
           if [ -n "${BEARER_TOKEN:-}" ]; then
-            EXTRA_ARGS+=(--bearer-token "${BEARER_TOKEN}")
+            extra+=(--bearer-token "${BEARER_TOKEN}")
           fi
-          # Run Python health check script (pass all config params)
           python scripts/health_check.py \
             --url "${API_URL}" \
             --expected-status "${EXPECTED_STATUS}" \
             --retries "${RETRIES}" \
             --timeout "${TIMEOUT}" \
             --backoff "${BACKOFF}" \
-            "${EXTRA_ARGS[@]}"
+            "${extra[@]}"
 
-      # Step 9: Handle health check failure(create/update GitHub Issue)
-      - name: Handle failure
-        if: env.SHOULD_RUN == 'true' && steps.health.outcome == 'failure'
-        uses: actions/github-script@v7  # Use GitHub Script action to manipulate Issues
+      - name: Report failure via issue
+        if: steps.gate.outputs.run == 'true' && steps.health.outcome == 'failure'
+        uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}  # GitHub built-in token (for repo operations)
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const envName = '${{ matrix.environment_name }}';
             const apiUrl = process.env.API_URL;
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const title = `API Health Check failed: ${envName}`;  # Issue title
-            # Issue body (includes env, URL, workflow link)
+            const title = `API Health Check failed: ${envName}`;
             const body = [
               `Environment: **${envName}**`,
               `URL: ${apiUrl}`,
@@ -219,7 +172,6 @@ jobs:
               '',
               'Please verify API availability.'
             ].join('\n');
-            // Query open Issues in the repo (filtered by label and title)
             const { data: issues } = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -229,7 +181,6 @@ jobs:
             });
             const existing = issues.find(issue => issue.title === title);
             if (existing) {
-              // Add comment to existing Issue if it exists
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -237,7 +188,6 @@ jobs:
                 body: `Health check failed again. Details: ${runUrl}`
               });
             } else {
-              // Create new Issue if it doesn't exist (with labels)
               await github.rest.issues.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -246,28 +196,19 @@ jobs:
                 labels: ['health-check','automated']
               });
             }
-            core.setFailed(`Health check failed for ${envName}`);  # Mark workflow as failed
+            core.setFailed(`Health check failed for ${envName}`);
 
-      # Step 10: Append result to workflow summary (success/failure)
       - name: Append result to summary
-        if: env.SHOULD_RUN == 'true'
+        if: steps.gate.outputs.run == 'true'
         run: |
-          if [ "${{ steps.health.outcome }}" = "success" ]; then
-            status="[PASS]"
+          status="${{ steps.health.outcome }}"
+          if [ "$status" = "success" ]; then
+            prefix="[PASS]"
           else
-            status="[FAIL]"
+            prefix="[FAIL]"
           fi
           {
-            echo "### ${status} - ${ENV_NAME}"
+            echo "### ${prefix} - ${ENV_NAME}"
             echo "- URL: ${API_URL}"
             echo "- Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          } >> "$GITHUB_STEP_SUMMARY"  # Write to GitHub step summary (UI display)
-
-      # Step 11: Append skip status to workflow summary
-      - name: Append skip summary
-        if: env.SHOULD_RUN != 'true'
-        run: |
-          {
-            echo "### [SKIP] - ${ENV_NAME}"
-            echo "- Reason: not selected for this execution."
           } >> "$GITHUB_STEP_SUMMARY"
