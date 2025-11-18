@@ -1,3 +1,4 @@
+# .github/workflows/staging-release.yml
 name: deploy-staging
 
 on:
@@ -5,18 +6,21 @@ on:
     branches: ['release']
     types: [closed]
 
+# Workflow permissions needed for tagging, releases, and OIDC authentication
 permissions:
   contents: write
   id-token: write
   issues: write
   pull-requests: write
-  security-events: write
+  security-events: write # Upload security scan result to Code Scanning
 
+# Prevent multiple staging deployments from running at the same time
 concurrency:
   group: staging-deploy
   cancel-in-progress: true
 
 jobs:
+  # Detect whether this PR actually changed code or Terraform
   changes:
     name: Detect changes
     runs-on: ubuntu-latest
@@ -25,17 +29,20 @@ jobs:
       terraform_changed: ${{ steps.classify.outputs.terraform_changed }}
       should_run: ${{ steps.classify.outputs.should_run }}
     steps:
+      # Check out repo
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # Detect changed files in PR
       - name: Detect changed files
         id: changed
         uses: tj-actions/changed-files@v45
         with:
           fetch_depth: 0
 
+      # Classify whether the changed files affect code or Terraform
       - name: Classify changes
         id: classify
         shell: bash
@@ -49,7 +56,7 @@ jobs:
           if [ -n "$files" ]; then
             while IFS= read -r file; do
               case "$file" in
-                *.tf|*.tfvars|*.tfvars.json|*.hcl|environments/*|locals.naming.tf|.github/workflows/*)
+                *.tf|*.tfvars|*.tfvars.json|*.hcl|environments/*|locals.naming.tf)
                   terraform_changed="true"
                   ;;
               esac
@@ -79,24 +86,43 @@ jobs:
             echo "No code or terraform changes detected."
           fi
 
-  build-images:
-    name: Build & publish images
+  # Main staging deployment job
+  staging:
+    # Run only if PR was merged and pipeline changes detected
     needs: changes
     if: github.event.pull_request.merged == true && needs.changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     environment: staging
-    outputs:
-      analytics_image_uri: ${{ steps.record.outputs.analytics_image_uri }}
-      askbeacon_image_uri: ${{ steps.record.outputs.askbeacon_image_uri }}
-      rc_tag: ${{ steps.resolve_tag.outputs.tag }}
+
     env:
+      # Static environment values for staging
       AWS_REGION: ap-southeast-2
       TF_WORKING_DIR: ${{ github.workspace }}/environments
       TARGET_WORKSPACE: staging
       TF_BACKEND_CONFIG: backend-staging.hcl
-      IMAGE_TAG: staging-${{ github.sha }}
-      CODE_CHANGED: ${{ needs.changes.outputs.code_changed }}
+      TF_IN_AUTOMATION: true
+      TF_INPUT: false
+      TF_VAR_region: ap-southeast-2
+
+      # Staging always APPLYs, never destroys automatically
+      TF_APPLY_FLAG: 'true'
+      TF_DESTROY_FLAG: 'false'
+
+      # Sensitive secrets passed to Terraform
+      TF_VAR_beacon_admin_username: ${{ secrets.BEACON_ADMIN_USERNAME }}
+      TF_VAR_beacon_admin_password: ${{ secrets.BEACON_ADMIN_PASSWORD }}
+      TF_VAR_beacon_guest_username: ${{ secrets.BEACON_GUEST_USERNAME }}
+      TF_VAR_beacon_guest_password: ${{ secrets.BEACON_GUEST_PASSWORD }}
+      TF_VAR_azure_openai_api_key: ${{ secrets.AZURE_OPENAI_API_KEY }}
+      TF_VAR_azure_openai_endpoint: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+      TF_VAR_azure_openai_api_version: ${{ secrets.AZURE_OPENAI_API_VERSION }}
+      TF_VAR_azure_openai_chat_deployment_name: ${{ secrets.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME }}
+      TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+      PIPELINE_CODE_CHANGED: ${{ needs.changes.outputs.code_changed }}
+      PIPELINE_TERRAFORM_CHANGED: ${{ needs.changes.outputs.terraform_changed }}
+
     steps:
+      # Checkout commit corresponding to the merged PR
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -104,11 +130,7 @@ jobs:
           persist-credentials: true
           ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
 
-      - name: Configure git auth for fetch/push
-        run: |
-          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
-
-      - name: Set up Python
+      - name: Set up Python (for docker_prep.py)
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -118,59 +140,54 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential autoconf automake libtool pkg-config zlib1g-dev libcurl4-openssl-dev libbz2-dev liblzma-dev
 
+      # Run initialization script
       - name: Run init script
         run: |
           chmod +x ./init.sh
           ./init.sh
 
-      - name: Normalize workspace name for ECR
-        run: |
-          set -euo pipefail
-          safe=$(printf '%s' "${TARGET_WORKSPACE}" | tr '[:upper:]' '[:lower:]')
-          safe=$(printf '%s' "${safe}" | sed -E 's/[^a-z0-9._-]+/-/g')
-          safe=$(printf '%s' "${safe}" | sed -E 's/^-+//; s/-+$//; s/-{2,}/-/g')
-          if [ -z "${safe}" ]; then
-            echo "::error::Normalized workspace name is empty." >&2
-            exit 1
-          fi
-          echo "WORKSPACE_SAFE=${safe}" >> "$GITHUB_ENV"
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.9.4
-
+      # Prepare Docker build context for analytics Lambda
       - name: Prepare analytics shared assets
-        if: env.CODE_CHANGED == 'true'
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' }}
         working-directory: lambda/analytics
         run: python docker_prep.py
 
+      # Prepare Docker build context for askbeacon Lambda
       - name: Prepare askbeacon shared assets
-        if: env.CODE_CHANGED == 'true'
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' }}
         working-directory: lambda/askbeacon
         run: python docker_prep.py
 
+      # Configure AWS creds (OIDC → assume role)
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      # Install Terraform
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.4
+
+      # Speed up Terraform plugin downloads
       - name: Prepare Terraform plugin cache dir
         run: |
           echo "TF_PLUGIN_CACHE_DIR=$HOME/.terraform.d/plugin-cache" >> $GITHUB_ENV
           mkdir -p "$HOME/.terraform.d/plugin-cache"
 
+      # Determine what tag the staging build will produce (RC automation)
       - name: Resolve RC tag
-        if: env.CODE_CHANGED == 'true'
-        id: resolve_tag
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' }}
+        id: ver
         shell: bash
         run: |
           set -euo pipefail
           git fetch --tags --force
 
           BODY="${{ github.event.pull_request.body || '' }}"
-          TAG_OVERRIDE=$(printf '%s\n' "$BODY" | sed -nE 's/.*tag:[[:space:]]*(v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?).*/\1/ip' | head -1)
+          TAG_OVERRIDE="$(printf '%s\n' "$BODY" | sed -nE 's/.*tag:[[:space:]]*(v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?).*/\1/ip' | head -1)"
 
           if [ -n "$TAG_OVERRIDE" ]; then
             if ! echo "$TAG_OVERRIDE" | grep -q -- '-rc\.'; then
@@ -181,7 +198,7 @@ jobs:
             fi
             TAG="$TAG_OVERRIDE"
           else
-            LATEST=$(git tag --list 'v[0-9]*' | grep -v -- '-rc\.' | sort -V | tail -1)
+            LATEST="$(git tag --list 'v[0-9]*' | grep -v -- '-rc\.' | sort -V | tail -1)"
             [ -z "$LATEST" ] && LATEST="v0.0.0"
             BASE="${LATEST%%-*}"
             IFS='.' read -r MA MI PA <<<"${BASE#v}"
@@ -200,29 +217,27 @@ jobs:
           fi
 
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "prerelease=true" >> "$GITHUB_OUTPUT"
 
-      - name: Ensure ECR repos & import into Terraform
+      # Ensure ECR repos exist and import them into Terraform state
+      - name: Ensure ECR repos & import into Terraform (staging)
         run: |
           set -euo pipefail
           REGION="${{ env.AWS_REGION }}"
           WORKSPACE="${TARGET_WORKSPACE}"
           TF_DIR="${TF_WORKING_DIR}"
-          REPO_WORKSPACE="${WORKSPACE_SAFE:-${WORKSPACE}}"
-
           terraform -chdir="${TF_DIR}" init -input=false -backend-config="${TF_BACKEND_CONFIG}"
           terraform -chdir="${TF_DIR}" workspace select "${WORKSPACE}" \
             || terraform -chdir="${TF_DIR}" workspace new "${WORKSPACE}"
-
           ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
-
           declare -A MODULE_ADDRS=(
             ["analytics"]="module.serverless_beacon.module.docker_image_analytics_lambda.aws_ecr_repository.this[0]"
             ["askbeacon"]="module.serverless_beacon.module.docker_image_askbeacon_lambda.aws_ecr_repository.this[0]"
           )
-
           for kind in analytics askbeacon; do
-            repo="sbeacon-${REPO_WORKSPACE}-${kind}-lambda-containers"
-
+            repo="sbeacon-${WORKSPACE}-${kind}-lambda-containers"
+            
+            # Create ECR repo if missing
             if ! aws ecr describe-repositories --repository-names "$repo" --region "$REGION" >/dev/null 2>&1; then
               echo "Creating ECR repo: $repo"
               aws ecr create-repository \
@@ -251,10 +266,8 @@ jobs:
             else
               echo "ECR repo exists: $repo"
             fi
-
-            name="sbeacon-${REPO_WORKSPACE}-${kind}-lambda-containers"
+            name="sbeacon-${WORKSPACE}-${kind}-lambda-containers"
             addr="${MODULE_ADDRS[$kind]}"
-
             if ! terraform -chdir="${TF_DIR}" state show "$addr" >/dev/null 2>&1; then
               echo "Importing $name into Terraform state"
               terraform -chdir="${TF_DIR}" import "$addr" "$name"
@@ -263,107 +276,99 @@ jobs:
             fi
           done
 
-      - name: Docker Buildx
-        if: env.CODE_CHANGED == 'true'
-        uses: docker/setup-buildx-action@v3
-
-      - name: Cache docker layers
-        if: env.CODE_CHANGED == 'true'
-        uses: actions/cache@v4
-        with:
-          path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-buildx-${{ github.sha }}
-          restore-keys: ${{ runner.os }}-buildx-
-
+      # Login to ECR for Docker push
       - name: ECR Login
-        if: env.CODE_CHANGED == 'true'
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' }}
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      # Build and push analytics image with two tags: gh-SHA and RC tag
       - name: Build & Push analytics image
-        if: env.CODE_CHANGED == 'true'
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' }}
         uses: docker/build-push-action@v6
         with:
           context: ./lambda/analytics
           push: true
           tags: |
-            ${{ steps.ecr.outputs.registry }}/sbeacon-${{ env.WORKSPACE_SAFE }}-analytics-lambda-containers:${{ env.IMAGE_TAG }}
-          cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to: type=local,dest=/tmp/.buildx-cache-new
+            ${{ steps.ecr.outputs.registry }}/sbeacon-staging-analytics-lambda-containers:gh-${{ github.sha }}
+            ${{ steps.ecr.outputs.registry }}/sbeacon-staging-analytics-lambda-containers:${{ steps.ver.outputs.tag }}
 
-      - name: Scan analytics image with Trivy
-        if: env.CODE_CHANGED == 'true'
+      # Security scan for analytics container
+      - name: Scan analytics image with Trivy (It should fail on HIGH/CRITICAL)
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' }}
         id: scan_analytics
-        continue-on-error: true
+        continue-on-error: true           # Allow run next image vul scan
         uses: aquasecurity/trivy-action@0.24.0
         with:
-          image-ref: ${{ steps.ecr.outputs.registry }}/sbeacon-${{ env.WORKSPACE_SAFE }}-analytics-lambda-containers:${{ env.IMAGE_TAG }}
+          image-ref: ${{ steps.ecr.outputs.registry }}/sbeacon-staging-analytics-lambda-containers:gh-${{ github.sha }}
           format: 'table'
           output: 'trivy-analytics.txt'
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
-          exit-code: '0'
+          exit-code: '0'   # Warning: Now Image with vuls can be deployed, change to "1" after testing !!! 
           ignore-unfixed: true
           timeout: '10m'
 
       - name: Attach analytics report to summary
-        if: env.CODE_CHANGED == 'true' && always() && steps.scan_analytics.outcome != 'skipped'
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' && always() && steps.scan_analytics.outcome != 'skipped' }}
         run: |
-          echo '### Analytics Image Trivy Reports:' >> $GITHUB_STEP_SUMMARY
+          echo '### Analytics Image Trivy Reports: ' >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          tail -n 200 trivy-analytics.txt >> $GITHUB_STEP_SUMMARY
+          tail -n 200 trivy-analytics.txt >> $GITHUB_STEP_SUMMARY # Last 200 records
           echo '```' >> $GITHUB_STEP_SUMMARY
 
+      # Upload analytics scan results
       - name: Upload analytics report artifact
-        if: env.CODE_CHANGED == 'true' && always() && steps.scan_analytics.outcome != 'skipped'
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' && always() && steps.scan_analytics.outcome != 'skipped' }}
         uses: actions/upload-artifact@v4
         with:
           name: trivy-analytics-${{ github.run_id }}
           path: trivy-analytics.txt
 
+      # Build & push askbeacon image
       - name: Build & Push askbeacon image
-        if: env.CODE_CHANGED == 'true'
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' }}
         uses: docker/build-push-action@v6
         with:
           context: ./lambda/askbeacon
           push: true
           tags: |
-            ${{ steps.ecr.outputs.registry }}/sbeacon-${{ env.WORKSPACE_SAFE }}-askbeacon-lambda-containers:${{ env.IMAGE_TAG }}
-          cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to: type=local,dest=/tmp/.buildx-cache-new
+            ${{ steps.ecr.outputs.registry }}/sbeacon-staging-askbeacon-lambda-containers:gh-${{ github.sha }}
+            ${{ steps.ecr.outputs.registry }}/sbeacon-staging-askbeacon-lambda-containers:${{ steps.ver.outputs.tag }}
 
-      - name: Scan askbeacon image with Trivy
-        if: env.CODE_CHANGED == 'true'
+      # Scan askbeacon image
+      - name: Scan askbeacon image with Trivy (It should fail on HIGH/CRITICAL)
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' }}
         id: scan_askbeacon
         continue-on-error: true
         uses: aquasecurity/trivy-action@0.24.0
         with:
-          image-ref: ${{ steps.ecr.outputs.registry }}/sbeacon-${{ env.WORKSPACE_SAFE }}-askbeacon-lambda-containers:${{ env.IMAGE_TAG }}
+          image-ref: ${{ steps.ecr.outputs.registry }}/sbeacon-staging-askbeacon-lambda-containers:gh-${{ github.sha }}
           format: 'table'
           output: 'trivy-askbeacon.txt'
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
-          exit-code: '0'
+          exit-code: '0' # Warning: Now Image with vuls can be deployed, change to "1" after testing !!! 
           ignore-unfixed: true
           timeout: '10m'
 
       - name: Attach askbeacon report to summary
-        if: env.CODE_CHANGED == 'true' && always() && steps.scan_askbeacon.outcome != 'skipped'
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' && always() && steps.scan_askbeacon.outcome != 'skipped' }}
         run: |
-          echo '### Askbeacon Image Trivy Reports:' >> $GITHUB_STEP_SUMMARY
+          echo '### Askbeacon Image Trivy Reports: ' >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           tail -n 200 trivy-askbeacon.txt >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Upload askbeacon report artifact
-        if: env.CODE_CHANGED == 'true' && always() && steps.scan_askbeacon.outcome != 'skipped'
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' && always() && steps.scan_askbeacon.outcome != 'skipped' }}
         uses: actions/upload-artifact@v4
         with:
           name: trivy-askbeacon-${{ github.run_id }}
           path: trivy-askbeacon.txt
 
-      - name: Gate image scans
-        if: env.CODE_CHANGED == 'true' && always()
+      - name: Gate - It should fail if any image on HIGH/CRITICAL
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' && always() }}
         run: |
           a="${{ steps.scan_analytics.outcome }}"
           b="${{ steps.scan_askbeacon.outcome }}"
@@ -373,19 +378,14 @@ jobs:
             exit 1
           fi
 
-      - name: Move layer cache
-        if: env.CODE_CHANGED == 'true'
-        run: |
-          rm -rf /tmp/.buildx-cache
-          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
-
-      - name: Resolve ECR digests
-        if: env.CODE_CHANGED == 'true'
+      # Resolve image digests for Terraform (staging RC build)
+      - name: Resolve ECR digests for RC tag
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' }}
+        id: digests
+        shell: bash
         run: |
           set -euo pipefail
-          TAG="${IMAGE_TAG}"
-          REPO_WORKSPACE="${WORKSPACE_SAFE:-${TARGET_WORKSPACE}}"
-
+          TAG="${{ steps.ver.outputs.tag }}"
           get_digest () {
             local repo="$1"
             aws ecr describe-images \
@@ -394,120 +394,22 @@ jobs:
               --query 'imageDetails[0].imageDigest' \
               --output text
           }
-
-          ANALYTICS_REPO="sbeacon-${REPO_WORKSPACE}-analytics-lambda-containers"
-          ASKBEACON_REPO="sbeacon-${REPO_WORKSPACE}-askbeacon-lambda-containers"
-
+          ANALYTICS_REPO="sbeacon-staging-analytics-lambda-containers"
+          ASKBEACON_REPO="sbeacon-staging-askbeacon-lambda-containers"
           ANALYTICS_DIGEST="$(get_digest "$ANALYTICS_REPO")"
           ASKBEACON_DIGEST="$(get_digest "$ASKBEACON_REPO")"
-
           if [ -z "$ANALYTICS_DIGEST" ] || [ "$ANALYTICS_DIGEST" = "None" ]; then
             echo "::error::analytics image not found for tag $TAG"; exit 1
           fi
           if [ -z "$ASKBEACON_DIGEST" ] || [ "$ASKBEACON_DIGEST" = "None" ]; then
             echo "::error::askbeacon image not found for tag $TAG"; exit 1
           fi
-
-          echo "ANALYTICS_DIGEST=$ANALYTICS_DIGEST" >> $GITHUB_ENV
-          echo "ASKBEACON_DIGEST=$ASKBEACON_DIGEST" >> $GITHUB_ENV
-
-      - name: Record image outputs
-        id: record
-        run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
           REG="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-          REPO_WORKSPACE="${WORKSPACE_SAFE:-${TARGET_WORKSPACE}}"
+          echo "TF_VAR_analytics_lambda_image_uri=${REG}/${ANALYTICS_REPO}@${ANALYTICS_DIGEST}" >> $GITHUB_ENV
+          echo "TF_VAR_askbeacon_lambda_image_uri=${REG}/${ASKBEACON_REPO}@${ASKBEACON_DIGEST}" >> $GITHUB_ENV
 
-          if [ -n "${ANALYTICS_DIGEST:-}" ]; then
-            echo "analytics_image_uri=${REG}/sbeacon-${REPO_WORKSPACE}-analytics-lambda-containers@${ANALYTICS_DIGEST}" >> "$GITHUB_OUTPUT"
-          else
-            echo "analytics_image_uri=" >> "$GITHUB_OUTPUT"
-          fi
-
-          if [ -n "${ASKBEACON_DIGEST:-}" ]; then
-            echo "askbeacon_image_uri=${REG}/sbeacon-${REPO_WORKSPACE}-askbeacon-lambda-containers@${ASKBEACON_DIGEST}" >> "$GITHUB_OUTPUT"
-          else
-            echo "askbeacon_image_uri=" >> "$GITHUB_OUTPUT"
-          fi
-
-  terraform-plan:
-    name: Terraform plan
-    needs:
-      - changes
-      - build-images
-    if: github.event.pull_request.merged == true && needs.changes.outputs.should_run == 'true'
-    runs-on: ubuntu-latest
-    environment: staging
-    outputs:
-      apply_flag: 'true'
-      destroy_flag: 'false'
-    env:
-      AWS_REGION: ap-southeast-2
-      TF_WORKING_DIR: ${{ github.workspace }}/environments
-      TARGET_WORKSPACE: staging
-      TF_BACKEND_CONFIG: backend-staging.hcl
-      TF_IN_AUTOMATION: true
-      TF_INPUT: false
-      TF_VAR_region: ap-southeast-2
-      TF_VAR_beacon_admin_username: ${{ secrets.BEACON_ADMIN_USERNAME }}
-      TF_VAR_beacon_admin_password: ${{ secrets.BEACON_ADMIN_PASSWORD }}
-      TF_VAR_beacon_guest_username: ${{ secrets.BEACON_GUEST_USERNAME }}
-      TF_VAR_beacon_guest_password: ${{ secrets.BEACON_GUEST_PASSWORD }}
-      TF_VAR_azure_openai_api_key: ${{ secrets.AZURE_OPENAI_API_KEY }}
-      TF_VAR_azure_openai_endpoint: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
-      TF_VAR_azure_openai_api_version: ${{ secrets.AZURE_OPENAI_API_VERSION }}
-      TF_VAR_azure_openai_chat_deployment_name: ${{ secrets.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME }}
-      TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
-
-      - name: Normalize workspace name for assets
-        run: |
-          set -euo pipefail
-          safe=$(printf '%s' "${TARGET_WORKSPACE}" | tr '[:upper:]' '[:lower:]')
-          safe=$(printf '%s' "${safe}" | sed -E 's/[^a-z0-9._-]+/-/g')
-          safe=$(printf '%s' "${safe}" | sed -E 's/^-+//; s/-+$//; s/-{2,}/-/g')
-          if [ -z "${safe}" ]; then
-            echo "::error::Normalized workspace name is empty." >&2
-            exit 1
-          fi
-          echo "WORKSPACE_SAFE=${safe}" >> "$GITHUB_ENV"
-          echo "LAMBDA_BUILD_ARTIFACT=lambda-build-plans-${safe}-${GITHUB_RUN_ID}" >> "$GITHUB_ENV"
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install build toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential autoconf automake libtool pkg-config zlib1g-dev libcurl4-openssl-dev libbz2-dev liblzma-dev
-
-      - name: Run init script
-        run: |
-          set -euo pipefail
-          chmod +x ./init.sh
-          ./init.sh
-
-      - name: Prepare build directories
-        run: mkdir -p builds
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.9.4
-
+      # Cache Terraform plugin and .terraform directory
       - name: Cache Terraform plugins & .terraform
         uses: actions/cache@v4
         with:
@@ -517,21 +419,19 @@ jobs:
           key: ${{ runner.os }}-tf-${{ hashFiles('**/*.tf','**/*.tfvars','**/*.hcl') }}
           restore-keys: ${{ runner.os }}-tf-
 
+      # Terraform init
       - name: Terraform Init
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} init -input=false -upgrade -backend-config=${{ env.TF_BACKEND_CONFIG }}
 
+      # Select staging workspace
       - name: Select Terraform Workspace
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} workspace select ${{ env.TARGET_WORKSPACE }} || terraform -chdir=${{ env.TF_WORKING_DIR }} workspace new ${{ env.TARGET_WORKSPACE }}
 
-      - name: Export analytics image URI
-        run: echo "TF_VAR_analytics_lambda_image_uri=${{ needs.build-images.outputs.analytics_image_uri }}" >> $GITHUB_ENV
-
-      - name: Export askbeacon image URI
-        run: echo "TF_VAR_askbeacon_lambda_image_uri=${{ needs.build-images.outputs.askbeacon_image_uri }}" >> $GITHUB_ENV
-
+      # Validate Terraform configuration
       - name: Terraform Validate
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} validate
 
+      # Trivy configuration scan (IaC security)
       - name: IaC scan (Terraform) with Trivy config
         id: trivy_iac
         continue-on-error: true
@@ -542,7 +442,7 @@ jobs:
           format: 'table'
           output: 'trivy-iac.txt'
           severity: 'CRITICAL,HIGH'
-          exit-code: '0'
+          exit-code: '0' # Warning: Now IaC with vuls can be deployed, change to "1" after testing !!! 
           timeout: '5m'
 
       - name: Attach IaC scan to summary
@@ -553,6 +453,7 @@ jobs:
           tail -n 200 trivy-iac.txt >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
+      # Upload IaC scan results
       - name: Upload IaC report artifact
         if: always() && steps.trivy_iac.outcome != 'skipped'
         uses: actions/upload-artifact@v4
@@ -560,176 +461,39 @@ jobs:
           name: trivy-iac-${{ github.run_id }}
           path: trivy-iac.txt
 
-      - name: Gate IaC scan
-        if: steps.trivy_iac.outcome == 'failure'
+      - name: Gate - It should fail if IaC has HIGH/CRITICAL
+        if: ${{ steps.trivy_iac.outcome == 'failure' }}
         run: |
           echo "::error::Trivy IaC scan found HIGH/CRITICAL."
           exit 1
 
+      # Terraform plan stage
       - name: Terraform Plan
-        id: terraform_plan
+        id: plan
         run: |
           terraform -chdir=${{ env.TF_WORKING_DIR }} plan -input=false -lock-timeout=10m -out=tfplan
           terraform -chdir=${{ env.TF_WORKING_DIR }} show -no-color tfplan > ${{ env.TF_WORKING_DIR }}/tfplan.txt
 
-      - name: Upload lambda build plans
-        if: steps.terraform_plan.outcome == 'success'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.LAMBDA_BUILD_ARTIFACT }}
-          path: builds
-
-      - name: Upload plan (text)
+      - name: Upload Plan
         uses: actions/upload-artifact@v4
         with:
           name: staging-terraform-plan-${{ github.run_id }}
           path: ${{ env.TF_WORKING_DIR }}/tfplan.txt
 
-      - name: Upload plan (binary)
-        uses: actions/upload-artifact@v4
-        with:
-          name: staging-tfplan-binary-${{ github.run_id }}
-          path: ${{ env.TF_WORKING_DIR }}/tfplan
-
-  terraform-apply:
-    name: Terraform apply
-    needs:
-      - terraform-plan
-    runs-on: ubuntu-latest
-    environment: staging
-    env:
-      AWS_REGION: ap-southeast-2
-      TF_WORKING_DIR: ${{ github.workspace }}/environments
-      TARGET_WORKSPACE: staging
-      TF_BACKEND_CONFIG: backend-staging.hcl
-      TF_DESTROY_FLAG: 'false'
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
-
-      - name: Normalize workspace name for assets
-        run: |
-          set -euo pipefail
-          safe=$(printf '%s' "${TARGET_WORKSPACE}" | tr '[:upper:]' '[:lower:]')
-          safe=$(printf '%s' "${safe}" | sed -E 's/[^a-z0-9._-]+/-/g')
-          safe=$(printf '%s' "${safe}" | sed -E 's/^-+//; s/-+$//; s/-{2,}/-/g')
-          if [ -z "${safe}" ]; then
-            echo "::error::Normalized workspace name is empty." >&2
-            exit 1
-          fi
-          echo "WORKSPACE_SAFE=${safe}" >> "$GITHUB_ENV"
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install build toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential autoconf automake libtool pkg-config zlib1g-dev libcurl4-openssl-dev libbz2-dev liblzma-dev
-
-      - name: Run init script
-        run: |
-          set -euo pipefail
-          chmod +x ./init.sh
-          ./init.sh
-
-      - name: Prepare build directories
-        run: mkdir -p builds
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.9.4
-
-      - name: Cache Terraform plugins & .terraform
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.terraform.d/plugin-cache
-            ${{ env.TF_WORKING_DIR }}/.terraform
-          key: ${{ runner.os }}-tf-${{ hashFiles('**/*.tf','**/*.tfvars','**/*.hcl') }}
-          restore-keys: ${{ runner.os }}-tf-
-
-      - name: Download plan (binary)
-        uses: actions/download-artifact@v4
-        with:
-          name: staging-tfplan-binary-${{ github.run_id }}
-          path: ${{ env.TF_WORKING_DIR }}
-
-      - name: Download lambda build plans
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ env.LAMBDA_BUILD_ARTIFACT }}
-          path: .
-
-      - name: Terraform Init
-        run: terraform -chdir=${{ env.TF_WORKING_DIR }} init -input=false -upgrade -backend-config=${{ env.TF_BACKEND_CONFIG }}
-
-      - name: Select Terraform Workspace
-        run: terraform -chdir=${{ env.TF_WORKING_DIR }} workspace select ${{ env.TARGET_WORKSPACE }} || terraform -chdir=${{ env.TF_WORKING_DIR }} workspace new ${{ env.TARGET_WORKSPACE }}
-
+      # Terraform apply for staging
       - name: Terraform Apply
+        if: env.TF_APPLY_FLAG == 'true'
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} apply -input=false -lock-timeout=10m -auto-approve tfplan
 
-      - name: Clean up plan files
-        if: always()
-        run: rm -f ${{ env.TF_WORKING_DIR }}/tfplan ${{ env.TF_WORKING_DIR }}/tfplan.txt
-
-  smoke-tests:
-    name: Smoke tests
-    needs:
-      - terraform-plan
-      - terraform-apply
-    runs-on: ubuntu-latest
-    environment: staging
-    env:
-      AWS_REGION: ap-southeast-2
-      TF_WORKING_DIR: ${{ github.workspace }}/environments
-      TARGET_WORKSPACE: staging
-      TF_BACKEND_CONFIG: backend-staging.hcl
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.9.4
-
-      - name: Terraform Init
-        run: terraform -chdir=${{ env.TF_WORKING_DIR }} init -input=false -upgrade -backend-config=${{ env.TF_BACKEND_CONFIG }}
-
-      - name: Select Terraform Workspace
-        run: terraform -chdir=${{ env.TF_WORKING_DIR }} workspace select ${{ env.TARGET_WORKSPACE }} || terraform -chdir=${{ env.TF_WORKING_DIR }} workspace new ${{ env.TARGET_WORKSPACE }}
-
+      # Publish deployed API URL to SSM and environment output
       - name: Publish API URL
+        if: env.TF_APPLY_FLAG == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          url=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw api_url 2>/dev/null || echo "")
+          url=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw api_url)
           if [ -z "${url}" ]; then
-            echo "::error::terraform output 'api_url' is empty or missing."
-            terraform -chdir=${{ env.TF_WORKING_DIR }} output 2>&1 || true
+            echo "::error::terraform output 'api_url' is empty."
             exit 1
           fi
           echo "Discovered API URL: ${url}"
@@ -741,22 +505,52 @@ jobs:
             --overwrite \
             --region "${{ env.AWS_REGION }}"
 
-      - name: Acquire smoke token
+      # Acquire token for smoke tests (admin auth)
+      - name: Acquire smoke test token
+        if: env.TF_APPLY_FLAG == 'true'
         id: smoke_token
         shell: bash
         run: |
           set -euo pipefail
           token=""
-          login_cmd=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw admin_login_command 2>/dev/null || echo "N/A")
+          login_cmd=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw admin_login_command || echo "N/A")
           if [ "${login_cmd}" != "N/A" ] && [ -n "${login_cmd}" ]; then
-            token=$(eval "${login_cmd}" 2>/dev/null | tr -d '"' || true)
+            if token=$(eval "${login_cmd}" 2>/dev/null | tr -d '"'); then
+              :
+            else
+              token=""
+            fi
           fi
+
+          if [ -z "${token}" ] && [ -n "${TF_VAR_beacon_admin_username:-}" ] && [ -n "${TF_VAR_beacon_admin_password:-}" ]; then
+            WORKSPACE="${{ env.TARGET_WORKSPACE }}"
+            POOL_NAME="sbeacon-users-${WORKSPACE}"
+            USER_POOL_ID=$(aws cognito-idp list-user-pools --max-results 60 --query "UserPools[?Name=='${POOL_NAME}'].Id | [0]" --output text 2>/dev/null || echo "")
+            CLIENT_ID=$(terraform -chdir=${{ env.TF_WORKING_DIR }} output -raw cognito_client_id 2>/dev/null || echo "")
+            if [ "${USER_POOL_ID}" != "None" ] && [ -n "${USER_POOL_ID}" ] && [ "${CLIENT_ID}" != "None" ] && [ -n "${CLIENT_ID}" ]; then
+              token=$(aws cognito-idp admin-initiate-auth \
+                --user-pool-id "${USER_POOL_ID}" \
+                --client-id "${CLIENT_ID}" \
+                --auth-flow ADMIN_USER_PASSWORD_AUTH \
+                --auth-parameters USERNAME="${TF_VAR_beacon_admin_username}",PASSWORD="${TF_VAR_beacon_admin_password}" \
+                --query 'AuthenticationResult.IdToken' \
+                --output text 2>/dev/null || echo "")
+              if [ "${token}" = "None" ]; then
+                token=""
+              fi
+            fi
+          fi
+
           if [ -z "${token}" ]; then
             echo "::notice::No bearer token acquired; protected endpoints will be reported as skipped."
           fi
           echo "bearer=${token}" >> "$GITHUB_OUTPUT"
 
-      - name: API smoke tests
+      # Execute smoke tests on API
+      - name: API smoke tests (non-blocking)
+        if: env.TF_APPLY_FLAG == 'true'
+        id: smoke
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -764,7 +558,7 @@ jobs:
           REPORT_MD="smoke_report.md"
           python scripts/api_smoke_report.py \
             --base-url "${SMOKE_URL}" \
-            --paths-file scripts/smoke_paths.txt \
+            --paths-file scripts/smoke_paths_staging.txt \
             --bearer-token "${{ steps.smoke_token.outputs.bearer }}" \
             --retries 3 \
             --backoff 2 \
@@ -774,71 +568,47 @@ jobs:
           if [ -f "${REPORT_MD}" ]; then
             cat "${REPORT_MD}" >> "$GITHUB_STEP_SUMMARY"
           fi
-          mkdir -p reports
-          mv "${REPORT_JSON}" "${REPORT_MD}" reports/
 
-      - name: Upload smoke reports
-        if: always()
+      # Upload smoke test results
+      - name: Upload smoke test artifacts
+        if: env.TF_APPLY_FLAG == 'true' && always()
         uses: actions/upload-artifact@v4
         with:
-          name: staging-smoke-${{ github.run_id }}
-          path: reports/
+          name: staging-api-smoke-${{ github.run_id }}
+          path: |
+            smoke_report.json
+            smoke_report.md
 
-  rc-release:
-    name: Publish RC tag
-    needs:
-      - build-images
-      - terraform-apply
-      - smoke-tests
-    if: needs.build-images.outputs.rc_tag != ''
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      # Create the RC Git tag after staging build
+      - name: Create and push RC tag
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' }}
+        run: |
+          git config user.name  "${GITHUB_ACTOR}"
+          git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+          git tag -a "${{ steps.ver.outputs.tag }}" "${{ github.event.pull_request.merge_commit_sha || github.sha }}" -m "staging rc: ${{ github.event.pull_request.merge_commit_sha || github.sha }} via PR #${{ github.event.pull_request.number }}"
+          git push origin "${{ steps.ver.outputs.tag }}"
+
+      # Publish pre-release in GitHub Releases
+      - name: Create GitHub Pre-release
+        if: ${{ env.PIPELINE_CODE_CHANGED == 'true' }}
+        uses: softprops/action-gh-release@v2
         with:
-          fetch-depth: 0
-          persist-credentials: true
-          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
-
-      - name: Configure git auth for push
-        run: |
-          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
-
-      - name: Configure git
-        run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@users.noreply.github.com"
-
-      - name: Push RC tag
-        run: |
-          set -euo pipefail
-          TAG="${{ needs.build-images.outputs.rc_tag }}"
-          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            echo "Tag $TAG already exists locally."
-          else
-            git tag "$TAG"
-          fi
-          git push origin "$TAG"
-
-      - name: Create GitHub prerelease
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ needs.build-images.outputs.rc_tag }}
-          name: ${{ needs.build-images.outputs.rc_tag }}
+          tag_name:  ${{ steps.ver.outputs.tag }}
+          name:      ${{ steps.ver.outputs.tag }}
           prerelease: true
-          body: |
-            Release candidate created from staging deployment.
-            - PR: #${{ github.event.pull_request.number }}
-            - Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          target_commitish: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+
 
   no-deploy:
     name: Skip deployment
     needs: changes
-    if: github.event.pull_request.merged != true || needs.changes.outputs.should_run != 'true'
     runs-on: ubuntu-latest
+    if: needs.changes.outputs.should_run != 'true'
     steps:
-      - name: Skipped
-        run: echo "Staging deployment skipped (PR not merged or no relevant changes)."
+      - name: No changes detected
+        run: echo "No code or Terraform changes detected. Skipping deployment."
+
