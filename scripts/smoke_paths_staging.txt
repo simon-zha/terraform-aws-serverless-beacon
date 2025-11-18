@@ -1,6 +1,6 @@
 # Public test endpoints
 test-health
-testPing
+test-ping
 
 # Core Beacon endpoints (require auth)
 datasets auth
