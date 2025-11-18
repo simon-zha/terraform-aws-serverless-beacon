@@ -413,7 +413,6 @@ jobs:
     outputs:
       apply_flag: ${{ steps.flags.outputs.apply_flag }}
       destroy_flag: ${{ steps.flags.outputs.destroy_flag }}
-      lambda_artifact: ${{ steps.lambda_artifact.outputs.lambda_artifact }}
     env:
       AWS_REGION: ${{ (github.event_name == 'workflow_dispatch' && inputs.aws_region) || vars.AWS_REGION || 'ap-southeast-2' }}
       TF_WORKING_DIR: ${{ github.workspace }}/environments
@@ -422,7 +421,7 @@ jobs:
       TF_IN_AUTOMATION: true
       TF_INPUT: false
       TF_VAR_region: ${{ (github.event_name == 'workflow_dispatch' && inputs.aws_region) || vars.AWS_REGION || 'ap-southeast-2' }}
-      TF_APPLY_FLAG: ${{ (github.event_name == 'workflow_dispatch' && inputs.apply) || 'false' }}
+      TF_APPLY_FLAG: ${{ (github.event_name == 'workflow_dispatch' && inputs.apply) || 'true' }}
       TF_DESTROY_FLAG: ${{ (github.event_name == 'workflow_dispatch' && inputs.trigger_destroy) || 'false' }}
       TF_VAR_beacon_admin_username: ${{ secrets.BEACON_ADMIN_USERNAME }}
       TF_VAR_beacon_admin_password: ${{ secrets.BEACON_ADMIN_PASSWORD }}
@@ -565,11 +564,6 @@ jobs:
           name: dev-tfplan-binary-${{ github.run_id }}
           path: ${{ env.TF_WORKING_DIR }}/tfplan
 
-      - name: Record lambda artifact name
-        id: lambda_artifact
-        run: |
-          echo "lambda_artifact=${LAMBDA_BUILD_ARTIFACT}" >> "$GITHUB_OUTPUT"
-
       - name: Record apply/destroy flags
         id: flags
         run: |
@@ -678,7 +672,7 @@ jobs:
       - name: Download lambda build plans
         uses: actions/download-artifact@v4
         with:
-          name: ${{ needs.terraform-plan.outputs.lambda_artifact }}
+          name: ${{ env.LAMBDA_BUILD_ARTIFACT }}
           path: .
 
       - name: Terraform Init
