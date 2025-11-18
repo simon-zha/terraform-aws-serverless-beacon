@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
 
-DEFAULT_TIMEOUT = 10
+DEFAULT_TIMEOUT = 10.0
 DEFAULT_RETRIES = 1
 DEFAULT_BACKOFF = 2.0
 USER_AGENT = "api-smoke-suite/1.0"
@@ -45,14 +45,15 @@ def parse_paths_file(path: Path) -> List[Endpoint]:
         parts = line.split()
         ep = Endpoint(path=parts[0])
         for token in parts[1:]:
-            if token.lower() in {"auth", "requires_auth"}:
+            lowered = token.lower()
+            if lowered in {"auth", "requires_auth"}:
                 ep.requires_auth = True
-            elif token.lower().startswith("status="):
+            elif lowered.startswith("status="):
                 try:
                     ep.expected_status = int(token.split("=", 1)[1])
-                except ValueError:
-                    raise ValueError(f"Invalid status token '{token}' in line: {raw_line}")
-            else:
+                except ValueError as exc:  # pragma: no cover - invalid config
+                    raise ValueError(f"Invalid status token '{token}' in line: {raw_line}") from exc
+            else:  # pragma: no cover - invalid config
                 raise ValueError(f"Unknown token '{token}' in line: {raw_line}")
         endpoints.append(ep)
     return endpoints
@@ -66,8 +67,7 @@ def build_url(base_url: str, path: str) -> str:
     return f"{base}/{suffix}"
 
 
-def http_get(url: str, token: Optional[str], timeout: float) -> Tuple[int, str, float]:
-    start = time.perf_counter()
+def http_get(url: str, token: Optional[str], timeout: float) -> Tuple[int, str]:
     headers = {"User-Agent": USER_AGENT}
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -76,10 +76,9 @@ def http_get(url: str, token: Optional[str], timeout: float) -> Tuple[int, str, 
         status = resp.getcode()
         try:
             body = resp.read().decode("utf-8", errors="replace")
-        except Exception:
+        except Exception:  # pragma: no cover - binary payload
             body = "<binary>"
-        duration_ms = (time.perf_counter() - start) * 1000.0
-        return status, body[:2000], duration_ms
+        return status, body[:2000]
 
 
 def run_check(
@@ -112,7 +111,8 @@ def run_check(
         attempt += 1
         start = time.perf_counter()
         try:
-            status_code, body_preview, duration_ms = http_get(url, token, timeout)
+            status_code, body_preview = http_get(url, token, timeout)
+            duration_ms = (time.perf_counter() - start) * 1000.0
             ok = status_code == endpoint.expected_status
             message = (
                 f"Status {status_code} (expected {endpoint.expected_status})"
@@ -228,9 +228,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="Per-request timeout in seconds")
     parser.add_argument("--retries", type=int, default=DEFAULT_RETRIES, help="Retries per endpoint")
     parser.add_argument("--backoff", type=float, default=DEFAULT_BACKOFF, help="Backoff multiplier between retries")
-    parser.add_argument("--expected-status", type=int, default=200, help="Default expected HTTP status code")
     parser.add_argument("--report-json", type=Path, help="Path to write JSON report")
     parser.add_argument("--report-md", type=Path, help="Path to write Markdown report")
+    parser.add_argument("--expected-status", type=int, default=200, help="Default expected HTTP status code")
 
     args = parser.parse_args(argv)
 
@@ -268,6 +268,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if skipped:
         print(f"[smoke] NOTE: {len(skipped)} endpoints skipped (auth/token requirements)", file=sys.stderr)
 
+    # Always exit 0 so workflows can continue and aggregate their own status
     return 0
 
 
