@@ -270,9 +270,8 @@ def parse_request(event) -> Tuple[RequestParams, str]:
             .get("cognito:groups", "unauthorized")
         )
         groups = [group.strip() for group in groups.split(",")]
-        base_group_name = (
-            f"{request_params.query.requested_granularity}-access-user-group"
-        )
+        granularity_value = str(request_params.query.requested_granularity)
+        base_group_name = f"{granularity_value}-access-user-group"
         env_suffix = BEACON_ENVIRONMENT.strip()
         expected_group_names = {base_group_name}
         if env_suffix:
@@ -287,7 +286,7 @@ def parse_request(event) -> Tuple[RequestParams, str]:
                 {
                     "anauthorized_access": (
                         "User does not belong to any of the required groups "
-                        f"{', '.join(sorted(expected_group_names))}"
+                        f"{', '.join(sorted(str(name) for name in expected_group_names))}"
                     )
                 },
                 400,
