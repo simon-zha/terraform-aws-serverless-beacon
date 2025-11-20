@@ -1,4 +1,4 @@
-name: API Health Check
+name: Smoke-test
 
 on:
   workflow_dispatch:
