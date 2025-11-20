@@ -547,7 +547,7 @@ jobs:
           echo "bearer=${token}" >> "$GITHUB_OUTPUT"
 
       # Execute smoke tests on API
-      - name: API smoke tests (non-blocking)
+      - name: API smoke tests
         if: env.TF_APPLY_FLAG == 'true'
         id: smoke
         continue-on-error: true
@@ -570,7 +570,7 @@ jobs:
           fi
 
       # Upload smoke test results
-      - name: Upload smoke test artifacts
+      - name: Upload API test artifacts
         if: env.TF_APPLY_FLAG == 'true' && always()
         uses: actions/upload-artifact@v4
         with:
@@ -611,4 +611,6 @@ jobs:
     steps:
       - name: No changes detected
         run: echo "No code or Terraform changes detected. Skipping deployment."
+
+
 
